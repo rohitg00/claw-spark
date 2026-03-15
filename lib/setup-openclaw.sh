@@ -68,6 +68,19 @@ setup_openclaw() {
     openclaw config set agents.defaults.model "ollama/${SELECTED_MODEL_ID}" >> "${CLAWSPARK_LOG}" 2>&1 || true
     openclaw config set agents.defaults.memorySearch.enabled false >> "${CLAWSPARK_LOG}" 2>&1 || true
 
+    # Sync .gateway-token with the actual token in config (onboard may have changed it)
+    local actual_token
+    actual_token=$(python3 -c "
+import json
+c = json.load(open('${config_file}'))
+print(c.get('gateway',{}).get('auth',{}).get('token',''))
+" 2>/dev/null || echo "")
+    if [[ -n "${actual_token}" ]]; then
+        echo "${actual_token}" > "${HOME}/.openclaw/.gateway-token"
+        chmod 600 "${HOME}/.openclaw/.gateway-token"
+        log_info "Gateway token synced to .gateway-token"
+    fi
+
     # Set up dual-agent routing: full tools in DMs, messaging-only in groups.
     # This is a CODE-LEVEL gate -- the group agent literally does not have exec/write/etc.
     # No prompt injection can use a tool that isn't loaded.
