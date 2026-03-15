@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # lib/select-model.sh — Recommends and lets the user pick an LLM based on hardware.
 # Uses llmfit (https://github.com/AlexsJones/llmfit) for non-DGX-Spark platforms.
+# Models are verified against the Ollama library before being shown.
 # Exports: SELECTED_MODEL_ID, SELECTED_MODEL_NAME, SELECTED_MODEL_CTX
 set -euo pipefail
 
@@ -42,10 +43,10 @@ select_model() {
     log_success "Model selected: ${SELECTED_MODEL_NAME} (${SELECTED_MODEL_ID})"
 }
 
-# ── DGX Spark: curated list (tested on real hardware) ─────────────────────
+# ── DGX Spark: curated list (tested on real hardware + llmfit verified) ───
 _select_model_curated_spark() {
     # Top models for DGX Spark (128 GB unified memory, NVIDIA GB10).
-    # Ranked by llmfit score + verified on real hardware.
+    # Ranked by llmfit score, cross-checked against Ollama library.
     # tok/s estimates from llmfit; qwen3.5:35b-a3b measured at ~59 tok/s.
     local -a model_ids=(
         "qwen3.5:35b-a3b"
@@ -62,11 +63,11 @@ _select_model_curated_spark() {
         "Qwen3 Coder 30B-A3B"
     )
     local -a model_labels=(
-        "(default) General MoE 18GB -- ~59 tok/s, proven on Spark"
-        "Best quality MoE 33GB -- ~45 tok/s, llmfit #1 (Score 95.5)"
-        "Coding/agentic MoE 52GB -- ~109 tok/s est. (Score 93.6)"
-        "Chat/instruct MoE 50GB -- ~59 tok/s est. (Score 92.2)"
-        "Coding MoE lightweight 19GB -- ~58 tok/s est. (Score 94.1)"
+        "qwen3.5:35b-a3b (default) -- 18GB, ~59 tok/s, proven on Spark"
+        "qwen3.5:122b-a10b -- 33GB, ~45 tok/s, top llmfit score (95.5)"
+        "qwen3-coder-next -- 52GB, ~109 tok/s est., coding/agentic"
+        "qwen3-next -- 50GB, ~59 tok/s est., chat/instruct"
+        "qwen3-coder:30b -- 19GB, ~58 tok/s est., coding lightweight"
         "Let me pick my own model"
     )
     local default_idx=0
@@ -80,14 +81,14 @@ _select_model_llmfit() {
 
     printf '  %s->%s Analyzing hardware with llmfit... ' "${CYAN}" "${RESET}" >/dev/tty
     local json
-    json=$(llmfit recommend --json -n 15 --min-fit good 2>>"${CLAWSPARK_LOG}") || {
+    json=$(llmfit recommend --json -n 20 --min-fit good 2>>"${CLAWSPARK_LOG}") || {
         printf '%sskipped%s\n' "${YELLOW}" "${RESET}" >/dev/tty
         log_warn "llmfit recommend failed -- falling back to curated list."
         return 1
     }
     printf '%sdone%s\n' "${GREEN}" "${RESET}" >/dev/tty
 
-    # Parse llmfit JSON and map to Ollama model IDs
+    # Parse llmfit JSON and map to Ollama model IDs (returns up to 10 candidates)
     local parsed
     parsed=$(_parse_llmfit_to_ollama "${json}" 2>>"${CLAWSPARK_LOG}") || return 1
 
@@ -96,18 +97,24 @@ _select_model_llmfit() {
         return 1
     fi
 
-    # Build arrays from parsed output (format: ollama_id|display_name|label per line)
+    # Verify each candidate exists on Ollama library, keep top 5
+    printf '  %s->%s Verifying models on Ollama... ' "${CYAN}" "${RESET}" >/dev/tty
     local -a model_ids=()
     local -a model_names=()
     local -a model_labels=()
 
     while IFS='|' read -r oid name label; do
-        model_ids+=("${oid}")
-        model_names+=("${name}")
-        model_labels+=("${label}")
+        if _check_ollama_model "${oid}"; then
+            model_ids+=("${oid}")
+            model_names+=("${name}")
+            model_labels+=("${label}")
+        fi
+        [[ ${#model_ids[@]} -ge 5 ]] && break
     done <<< "${parsed}"
+    printf '%s%d verified%s\n' "${GREEN}" "${#model_ids[@]}" "${RESET}" >/dev/tty
 
     if [[ ${#model_ids[@]} -eq 0 ]]; then
+        log_warn "No llmfit models found on Ollama -- falling back to curated list."
         return 1
     fi
 
@@ -115,8 +122,20 @@ _select_model_llmfit() {
     model_labels+=("Let me pick my own model")
     local default_idx=0
 
-    log_info "llmfit found ${#model_ids[@]} compatible model(s) for your hardware."
+    log_info "Found ${#model_ids[@]} compatible model(s) on Ollama for your hardware."
     _present_model_choices model_ids model_names model_labels "${default_idx}"
+}
+
+# ── Check if a model exists on the Ollama library ─────────────────────────
+_check_ollama_model() {
+    local model_id="$1"
+
+    # Try local first (instant if already pulled)
+    ollama show "${model_id}" &>/dev/null 2>&1 && return 0
+
+    # Check Ollama library website (model page exists = model available)
+    local base="${model_id%%:*}"
+    curl -sf --max-time 5 "https://ollama.com/library/${base}" -o /dev/null 2>/dev/null
 }
 
 # ── Curated fallback for non-Spark platforms ──────────────────────────────
@@ -131,8 +150,8 @@ _select_model_curated_fallback() {
             model_ids=("nemotron-3-nano" "glm-4.7-flash")
             model_names=("Nemotron 3 Nano 30B" "GLM 4.7 Flash")
             model_labels=(
-                "Balanced (default) -- optimized for Jetson"
-                "Lightweight -- compact & fast"
+                "nemotron-3-nano (default) -- optimized for Jetson"
+                "glm-4.7-flash -- compact & fast"
             )
             ;;
         rtx)
@@ -140,15 +159,15 @@ _select_model_curated_fallback() {
                 model_ids=("qwen3.5:35b-a3b" "glm-4.7-flash")
                 model_names=("Qwen 3.5 35B-A3B" "GLM 4.7 Flash")
                 model_labels=(
-                    "Balanced (default) -- MoE Q4, fits 24 GB"
-                    "Lightweight -- compact & fast"
+                    "qwen3.5:35b-a3b (default) -- MoE, fits 24 GB"
+                    "glm-4.7-flash -- compact & fast"
                 )
             else
                 model_ids=("glm-4.7-flash" "qwen3:8b")
                 model_names=("GLM 4.7 Flash" "Qwen3 8B")
                 model_labels=(
-                    "Balanced (default) -- fits smaller VRAM"
-                    "Lightweight -- compact 8B model"
+                    "glm-4.7-flash (default) -- fits smaller VRAM"
+                    "qwen3:8b -- lightweight 8B model"
                 )
             fi
             ;;
@@ -156,8 +175,8 @@ _select_model_curated_fallback() {
             model_ids=("glm-4.7-flash" "qwen3:8b")
             model_names=("GLM 4.7 Flash" "Qwen3 8B")
             model_labels=(
-                "Balanced (default)"
-                "Lightweight"
+                "glm-4.7-flash (default)"
+                "qwen3:8b -- lightweight"
             )
             ;;
     esac
@@ -243,6 +262,7 @@ _ensure_llmfit() {
 }
 
 # ── Parse llmfit JSON and map to Ollama model IDs ─────────────────────────
+# Returns up to 10 candidates as: ollama_id|display_name|label (one per line)
 _parse_llmfit_to_ollama() {
     local json="$1"
 
@@ -250,7 +270,7 @@ _parse_llmfit_to_ollama() {
 import json, sys, re
 
 # Map llmfit HF-style model names to Ollama model IDs.
-# Each entry: (compiled_regex, ollama_template)
+# Each entry: (regex_pattern, ollama_template)
 # Templates use {size} for parameter count extracted from the name/param field.
 PATTERNS = [
     # Qwen3 Coder Next (must be before generic Qwen3 patterns)
@@ -343,17 +363,22 @@ for m in models:
     tps = m.get('estimated_tps', 0)
     fit = m.get('fit_level', 'Unknown')
     quant = m.get('best_quant', '')
-    params = m.get('parameter_count', '')
+    mem = m.get('memory_required_gb', 0)
+    use_case = m.get('use_case', '')
 
-    label = f'{params} {quant} -- Score {score:.0f}, ~{tps:.0f} tok/s, {fit} fit'
-    if results:
-        label_prefix = ''
-    else:
-        label_prefix = '(recommended) '
+    # Shorten use_case for label
+    cat = ''
+    uc = use_case.lower()
+    if 'cod' in uc or 'agent' in uc:
+        cat = ', coding'
+    elif 'chat' in uc or 'instruct' in uc:
+        cat = ', chat'
 
-    print(f'{ollama_id}|{ollama_id}|{label_prefix}{label}')
+    default_tag = ' (recommended)' if not results else ''
+    label = f'{ollama_id}{default_tag} -- {mem:.0f}GB, ~{tps:.0f} tok/s, {fit} fit{cat}'
+    print(f'{ollama_id}|{ollama_id}|{label}')
     results.append(ollama_id)
-    if len(results) >= 5:
+    if len(results) >= 10:
         break
 " "${json}"
 }
