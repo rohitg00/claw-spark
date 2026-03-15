@@ -146,7 +146,22 @@ _start_dashboard() {
     fi
 
     log_info "Starting ClawMetry dashboard..."
-    nohup python3 -m clawmetry --port 8900 --host 127.0.0.1 > "${dashboard_log}" 2>&1 &
+
+    # clawmetry doesn't have __main__.py, so python3 -m clawmetry won't work.
+    # Try multiple launch methods in order of preference.
+    local launch_cmd=""
+
+    # Method 1: clawmetry CLI entry point (may be in ~/.local/bin from --user install)
+    if command -v clawmetry &>/dev/null; then
+        launch_cmd="clawmetry --port 8900 --host 127.0.0.1"
+    elif [[ -x "${HOME}/.local/bin/clawmetry" ]]; then
+        launch_cmd="${HOME}/.local/bin/clawmetry --port 8900 --host 127.0.0.1"
+    else
+        # Method 2: use waitress to serve the Flask app directly
+        launch_cmd="python3 -c \"from clawmetry import create_app; from waitress import serve; serve(create_app(), host='127.0.0.1', port=8900)\""
+    fi
+
+    nohup bash -c "${launch_cmd}" > "${dashboard_log}" 2>&1 &
     local dash_pid=$!
     echo "${dash_pid}" > "${dashboard_pid_file}"
 
@@ -155,5 +170,20 @@ _start_dashboard() {
         log_success "ClawMetry running (PID ${dash_pid}). Logs: ${dashboard_log}"
     else
         log_warn "ClawMetry process exited unexpectedly. Check ${dashboard_log}."
+        # Method 3: last resort -- try flask dev server
+        log_info "Trying alternative launch method..."
+        nohup python3 -c "
+from clawmetry import create_app
+app = create_app()
+app.run(host='127.0.0.1', port=8900)
+" > "${dashboard_log}" 2>&1 &
+        dash_pid=$!
+        echo "${dash_pid}" > "${dashboard_pid_file}"
+        sleep 2
+        if kill -0 "${dash_pid}" 2>/dev/null; then
+            log_success "ClawMetry running via Flask dev server (PID ${dash_pid})."
+        else
+            log_warn "All ClawMetry launch methods failed. Check ${dashboard_log}."
+        fi
     fi
 }

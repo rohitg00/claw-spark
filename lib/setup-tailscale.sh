@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # lib/setup-tailscale.sh — Optional Tailscale setup for secure remote access
 # to OpenClaw and ClawMetry from anywhere on your Tailnet.
+# Uses `tailscale serve` as a reverse proxy -- does NOT restart the gateway.
 set -euo pipefail
 
 setup_tailscale() {
@@ -46,48 +47,57 @@ setup_tailscale() {
         fi
     fi
 
-    # ── Get machine name for display ─────────────────────────────────────────
-    local machine_name
-    machine_name=$(tailscale status --self=true --peers=false 2>/dev/null \
-        | awk '{print $2}' | head -1 || echo "your-machine")
+    # ── Get the Tailscale FQDN for this machine ───────────────────────────────
+    local ts_fqdn=""
+    # Method 1: tailscale status --json parsed with python3 (most reliable)
+    ts_fqdn=$(tailscale status --json 2>/dev/null | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+self_key = data.get('Self', {})
+dns_name = self_key.get('DNSName', '')
+# DNSName ends with a trailing dot, strip it
+print(dns_name.rstrip('.'))
+" 2>/dev/null || echo "")
 
-    local tailnet_name
-    tailnet_name=$(tailscale status --json 2>/dev/null \
-        | grep -o '"MagicDNSSuffix":"[^"]*"' | cut -d'"' -f4 || echo "tail-net-name")
+    # Method 2: tailscale whois --self
+    if [[ -z "${ts_fqdn}" ]]; then
+        ts_fqdn=$(tailscale whois --self 2>/dev/null \
+            | grep -i 'Name:' | head -1 | awk '{print $2}' \
+            | sed 's/\.$//' || echo "")
+    fi
 
-    # ── Restart gateway with Tailscale ───────────────────────────────────────
-    log_info "Configuring OpenClaw gateway for Tailscale..."
-
-    local gateway_pid_file="${CLAWSPARK_DIR}/gateway.pid"
-    local gateway_log="${CLAWSPARK_DIR}/gateway.log"
-
-    # Stop existing gateway
-    if [[ -f "${gateway_pid_file}" ]]; then
-        local old_pid
-        old_pid=$(cat "${gateway_pid_file}")
-        if kill -0 "${old_pid}" 2>/dev/null; then
-            log_info "Stopping existing gateway (PID ${old_pid})..."
-            kill "${old_pid}" 2>/dev/null || true
-            sleep 1
+    # Method 3: construct from IP
+    if [[ -z "${ts_fqdn}" ]]; then
+        local ts_ip
+        ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+        if [[ -n "${ts_ip}" ]]; then
+            ts_fqdn="${ts_ip}"
+        else
+            ts_fqdn="your-machine"
         fi
     fi
 
-    # Source Ollama provider credentials
-    local env_file="${HOME}/.openclaw/gateway.env"
-    [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+    log_info "Tailscale FQDN: ${ts_fqdn}"
 
-    # Restart with --tailscale flag
-    nohup openclaw gateway run --tailscale serve > "${gateway_log}" 2>&1 &
-    local gw_pid=$!
-    echo "${gw_pid}" > "${gateway_pid_file}"
+    # ── Use tailscale serve as a reverse proxy ─────────────────────────────────
+    # This proxies HTTPS on the Tailnet to the local gateway on localhost:18789.
+    # The gateway and node host keep running unchanged -- no restart needed.
+    log_info "Setting up tailscale serve to proxy to OpenClaw gateway..."
 
-    sleep 2
-    if kill -0 "${gw_pid}" 2>/dev/null; then
-        log_success "Gateway restarted with Tailscale (PID ${gw_pid})."
+    # Proxy HTTPS traffic to the local gateway
+    if tailscale serve --bg --https 443 http://127.0.0.1:18789 >> "${CLAWSPARK_LOG}" 2>&1; then
+        log_success "Tailscale serve configured (HTTPS -> localhost:18789)."
+    elif tailscale serve --bg http://127.0.0.1:18789 >> "${CLAWSPARK_LOG}" 2>&1; then
+        # Older tailscale versions use simpler syntax
+        log_success "Tailscale serve configured (-> localhost:18789)."
     else
-        log_warn "Gateway process exited — it may need manual restart."
-        log_info "Try: openclaw gateway run --tailscale serve"
+        log_warn "tailscale serve failed. You can set it up manually:"
+        log_info "  tailscale serve --bg http://127.0.0.1:18789"
     fi
+
+    # Save the URL for the final install message
+    local ts_url="https://${ts_fqdn}"
+    echo "${ts_url}" > "${CLAWSPARK_DIR}/tailscale.url"
 
     # ── Print access information ─────────────────────────────────────────────
     printf '\n'
@@ -95,18 +105,15 @@ setup_tailscale() {
         "${BOLD}Tailscale Remote Access${RESET}" \
         "" \
         "OpenClaw gateway:" \
-        "  https://${machine_name}.${tailnet_name}:18789" \
+        "  ${ts_url}" \
         "" \
         "To also expose the ClawMetry dashboard:" \
-        "  tailscale serve 8900" \
+        "  tailscale serve --bg --https 8900 http://127.0.0.1:8900" \
         "" \
         "Access from any device on your Tailnet." \
         "Traffic is encrypted end-to-end via WireGuard."
     printf '\n'
 
-    log_info "You can now access your AI assistant from any device on your Tailnet"
-    log_info "at https://${machine_name}.${tailnet_name}:18789"
-    log_info "To expose the ClawMetry dashboard remotely, run: tailscale serve 8900"
-
+    log_info "Access your AI assistant from any device on your Tailnet at ${ts_url}"
     log_success "Tailscale setup complete."
 }
