@@ -88,13 +88,20 @@ setup_skills() {
     local installed=0
     local failed=0
 
+    local skill_timeout=120  # 2 minutes max per skill
+
     for skill in "${skills[@]}"; do
         printf '  %s→%s Installing %s%s%s ... ' "${CYAN}" "${RESET}" "${BOLD}" "${skill}" "${RESET}"
-        if npx clawhub@latest install "${skill}" >> "${CLAWSPARK_LOG}" 2>&1; then
+        if timeout "${skill_timeout}" npx clawhub@latest install "${skill}" >> "${CLAWSPARK_LOG}" 2>&1; then
             printf '%s✓%s\n' "${GREEN}" "${RESET}"
             installed=$(( installed + 1 ))
         else
-            printf '%s✗ (failed, continuing)%s\n' "${YELLOW}" "${RESET}"
+            local ec=$?
+            if [[ ${ec} -eq 124 ]]; then
+                printf '%s✗ (timed out after %ds, skipping)%s\n' "${YELLOW}" "${skill_timeout}" "${RESET}"
+            else
+                printf '%s✗ (failed, continuing)%s\n' "${YELLOW}" "${RESET}"
+            fi
             log_warn "Skill '${skill}' failed to install — see ${CLAWSPARK_LOG}"
             failed=$(( failed + 1 ))
         fi
@@ -117,7 +124,7 @@ _install_community_skills() {
     )
     for skill in "${community_skills[@]}"; do
         printf '  %s->%s Installing %s%s%s ... ' "${CYAN}" "${RESET}" "${BOLD}" "${skill}" "${RESET}"
-        if npx clawhub@latest install "${skill}" >> "${CLAWSPARK_LOG}" 2>&1; then
+        if timeout 120 npx clawhub@latest install "${skill}" >> "${CLAWSPARK_LOG}" 2>&1; then
             printf '%sOK%s\n' "${GREEN}" "${RESET}"
         else
             printf '%sskipped%s\n' "${YELLOW}" "${RESET}"
