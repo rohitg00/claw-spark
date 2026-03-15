@@ -115,8 +115,41 @@ print(dns_name.rstrip('.'))
         fi
     fi
 
-    # Save the URL for the final install message
+    # ── Allow the Tailscale origin in the OpenClaw gateway ────────────────────
+    # Without this, the Control UI rejects WebSocket connections from the
+    # Tailscale HTTPS URL with "origin not allowed".
     local ts_url="https://${ts_fqdn}"
+    log_info "Adding ${ts_url} to gateway allowedOrigins..."
+    openclaw config set gateway.controlUi.allowedOrigins "[\"${ts_url}\"]" >> "${CLAWSPARK_LOG}" 2>&1 || {
+        log_warn "Could not set allowedOrigins. You may need to run:"
+        log_info "  openclaw config set gateway.controlUi.allowedOrigins '[\"${ts_url}\"]'"
+    }
+
+    # Restart the gateway to pick up the new origin (but keep node host running)
+    local gateway_pid_file="${CLAWSPARK_DIR}/gateway.pid"
+    local gateway_log="${CLAWSPARK_DIR}/gateway.log"
+    if [[ -f "${gateway_pid_file}" ]]; then
+        local old_pid
+        old_pid=$(cat "${gateway_pid_file}")
+        if kill -0 "${old_pid}" 2>/dev/null; then
+            log_info "Restarting gateway to apply allowedOrigins..."
+            kill "${old_pid}" 2>/dev/null || true
+            sleep 2
+            local env_file="${HOME}/.openclaw/gateway.env"
+            [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+            nohup openclaw gateway run --bind loopback > "${gateway_log}" 2>&1 &
+            local gw_pid=$!
+            echo "${gw_pid}" > "${gateway_pid_file}"
+            sleep 2
+            if kill -0 "${gw_pid}" 2>/dev/null; then
+                log_success "Gateway restarted with Tailscale origin allowed (PID ${gw_pid})."
+            else
+                log_warn "Gateway restart failed. Run: clawspark restart"
+            fi
+        fi
+    fi
+
+    # Save the URL for the final install message
     echo "${ts_url}" > "${CLAWSPARK_DIR}/tailscale.url"
 
     # ── Print access information ─────────────────────────────────────────────
