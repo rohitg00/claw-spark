@@ -1,70 +1,11 @@
 #!/usr/bin/env bash
 # lib/select-model.sh — Recommends and lets the user pick an LLM based on hardware.
+# Uses llmfit (https://github.com/AlexsJones/llmfit) for non-DGX-Spark platforms.
 # Exports: SELECTED_MODEL_ID, SELECTED_MODEL_NAME, SELECTED_MODEL_CTX
 set -euo pipefail
 
 select_model() {
     log_info "Selecting model for ${HW_PLATFORM}..."
-
-    # ── Build model roster for the detected platform ────────────────────────
-    local -a model_ids=()
-    local -a model_names=()
-    local -a model_labels=()
-    local default_idx=0
-
-    case "${HW_PLATFORM}" in
-        dgx-spark)
-            model_ids=("qwen3.5:35b-a3b" "qwen3.5:122b" "glm-4.7-flash")
-            model_names=("Qwen 3.5 35B-A3B" "Qwen 3.5 122B" "GLM 4.7 Flash")
-            model_labels=(
-                "Balanced (default) — MoE, ~59 tok/s"
-                "Maximum quality — 122B model (81GB)"
-                "Lightweight — compact & fast"
-            )
-            default_idx=0
-            ;;
-        jetson)
-            model_ids=("nemotron-3-nano" "glm-4.7-flash")
-            model_names=("Nemotron 3 Nano 30B" "GLM 4.7 Flash")
-            model_labels=(
-                "Balanced (default) — optimized for Jetson"
-                "Lightweight — compact & fast"
-            )
-            default_idx=0
-            ;;
-        rtx)
-            if (( HW_GPU_VRAM_MB >= 24576 )); then
-                # >= 24 GB VRAM
-                model_ids=("qwen3.5:35b-a3b" "glm-4.7-flash")
-                model_names=("Qwen 3.5 35B-A3B" "GLM 4.7 Flash")
-                model_labels=(
-                    "Balanced (default) — MoE Q4, fits 24 GB"
-                    "Lightweight — compact & fast"
-                )
-            else
-                # < 24 GB VRAM
-                model_ids=("glm-4.7-flash" "qwen3:8b")
-                model_names=("GLM 4.7 Flash" "Qwen3 8B")
-                model_labels=(
-                    "Balanced (default) — fits smaller VRAM"
-                    "Lightweight — compact 8B model"
-                )
-            fi
-            default_idx=0
-            ;;
-        *)
-            model_ids=("glm-4.7-flash" "qwen3:8b")
-            model_names=("GLM 4.7 Flash" "Qwen3 8B")
-            model_labels=(
-                "Balanced (default)"
-                "Lightweight"
-            )
-            default_idx=0
-            ;;
-    esac
-
-    # Add a "Let me pick" sentinel
-    model_labels+=("Let me pick my own model")
 
     # ── If --model was passed on command line, use it directly ──────────────
     if [[ -n "${FLAG_MODEL:-}" ]]; then
@@ -76,47 +17,16 @@ select_model() {
         return 0
     fi
 
-    # ── Interactive selection ───────────────────────────────────────────────
-    local choice
-    choice=$(prompt_choice "Which model would you like to run?" model_labels "${default_idx}")
-
-    # Check if user chose "Let me pick"
-    if [[ "${choice}" == "Let me pick my own model" ]]; then
-        if [[ "${CLAWSPARK_DEFAULTS}" == "true" ]]; then
-            # In defaults mode fall back to the default model
-            SELECTED_MODEL_ID="${model_ids[$default_idx]}"
-            SELECTED_MODEL_NAME="${model_names[$default_idx]}"
-        else
-            printf '\n  %sEnter the Ollama model ID (e.g. llama3:8b):%s ' "${BOLD}" "${RESET}"
-            local custom_id
-            read -r custom_id </dev/tty || custom_id=""
-            if [[ -z "${custom_id}" ]]; then
-                log_warn "No model entered — falling back to default."
-                SELECTED_MODEL_ID="${model_ids[$default_idx]}"
-                SELECTED_MODEL_NAME="${model_names[$default_idx]}"
-            else
-                SELECTED_MODEL_ID="${custom_id}"
-                SELECTED_MODEL_NAME="${custom_id}"
-            fi
-        fi
-    else
-        # Map the chosen label back to its index
-        local i
-        local found=false
-        for i in $(seq 0 $(( ${#model_labels[@]} - 2 ))); do
-            if [[ "${model_labels[$i]}" == "${choice}" ]]; then
-                SELECTED_MODEL_ID="${model_ids[$i]}"
-                SELECTED_MODEL_NAME="${model_names[$i]}"
-                found=true
-                break
-            fi
-        done
-        if [[ "${found}" != "true" ]]; then
-            log_warn "Could not match selection -- using default model."
-            SELECTED_MODEL_ID="${model_ids[$default_idx]}"
-            SELECTED_MODEL_NAME="${model_names[$default_idx]}"
-        fi
-    fi
+    # ── Select based on platform ───────────────────────────────────────────
+    case "${HW_PLATFORM}" in
+        dgx-spark)
+            _select_model_curated_spark
+            ;;
+        *)
+            # Try llmfit first, fall back to curated list
+            _select_model_llmfit || _select_model_curated_fallback
+            ;;
+    esac
 
     SELECTED_MODEL_CTX=32768
     export SELECTED_MODEL_ID SELECTED_MODEL_NAME SELECTED_MODEL_CTX
@@ -130,4 +40,292 @@ select_model() {
         "Context : ${SELECTED_MODEL_CTX} tokens"
 
     log_success "Model selected: ${SELECTED_MODEL_NAME} (${SELECTED_MODEL_ID})"
+}
+
+# ── DGX Spark: curated list (tested on real hardware) ─────────────────────
+_select_model_curated_spark() {
+    local -a model_ids=("qwen3.5:35b-a3b" "qwen3.5:122b" "glm-4.7-flash")
+    local -a model_names=("Qwen 3.5 35B-A3B" "Qwen 3.5 122B" "GLM 4.7 Flash")
+    local -a model_labels=(
+        "Balanced (default) -- MoE, ~59 tok/s"
+        "Maximum quality -- 122B model (81GB)"
+        "Lightweight -- compact & fast"
+        "Let me pick my own model"
+    )
+    local default_idx=0
+
+    _present_model_choices model_ids model_names model_labels "${default_idx}"
+}
+
+# ── llmfit-powered selection for all other platforms ──────────────────────
+_select_model_llmfit() {
+    _ensure_llmfit || return 1
+
+    printf '  %s->%s Analyzing hardware with llmfit... ' "${CYAN}" "${RESET}" >/dev/tty
+    local json
+    json=$(llmfit recommend --json -n 15 --min-fit good 2>>"${CLAWSPARK_LOG}") || {
+        printf '%sskipped%s\n' "${YELLOW}" "${RESET}" >/dev/tty
+        log_warn "llmfit recommend failed -- falling back to curated list."
+        return 1
+    }
+    printf '%sdone%s\n' "${GREEN}" "${RESET}" >/dev/tty
+
+    # Parse llmfit JSON and map to Ollama model IDs
+    local parsed
+    parsed=$(_parse_llmfit_to_ollama "${json}" 2>>"${CLAWSPARK_LOG}") || return 1
+
+    if [[ -z "${parsed}" ]]; then
+        log_warn "No llmfit models mapped to Ollama -- falling back to curated list."
+        return 1
+    fi
+
+    # Build arrays from parsed output (format: ollama_id|display_name|label per line)
+    local -a model_ids=()
+    local -a model_names=()
+    local -a model_labels=()
+
+    while IFS='|' read -r oid name label; do
+        model_ids+=("${oid}")
+        model_names+=("${name}")
+        model_labels+=("${label}")
+    done <<< "${parsed}"
+
+    if [[ ${#model_ids[@]} -eq 0 ]]; then
+        return 1
+    fi
+
+    # Add custom option
+    model_labels+=("Let me pick my own model")
+    local default_idx=0
+
+    log_info "llmfit found ${#model_ids[@]} compatible model(s) for your hardware."
+    _present_model_choices model_ids model_names model_labels "${default_idx}"
+}
+
+# ── Curated fallback for non-Spark platforms ──────────────────────────────
+_select_model_curated_fallback() {
+    local -a model_ids=()
+    local -a model_names=()
+    local -a model_labels=()
+    local default_idx=0
+
+    case "${HW_PLATFORM}" in
+        jetson)
+            model_ids=("nemotron-3-nano" "glm-4.7-flash")
+            model_names=("Nemotron 3 Nano 30B" "GLM 4.7 Flash")
+            model_labels=(
+                "Balanced (default) -- optimized for Jetson"
+                "Lightweight -- compact & fast"
+            )
+            ;;
+        rtx)
+            if (( HW_GPU_VRAM_MB >= 24576 )); then
+                model_ids=("qwen3.5:35b-a3b" "glm-4.7-flash")
+                model_names=("Qwen 3.5 35B-A3B" "GLM 4.7 Flash")
+                model_labels=(
+                    "Balanced (default) -- MoE Q4, fits 24 GB"
+                    "Lightweight -- compact & fast"
+                )
+            else
+                model_ids=("glm-4.7-flash" "qwen3:8b")
+                model_names=("GLM 4.7 Flash" "Qwen3 8B")
+                model_labels=(
+                    "Balanced (default) -- fits smaller VRAM"
+                    "Lightweight -- compact 8B model"
+                )
+            fi
+            ;;
+        *)
+            model_ids=("glm-4.7-flash" "qwen3:8b")
+            model_names=("GLM 4.7 Flash" "Qwen3 8B")
+            model_labels=(
+                "Balanced (default)"
+                "Lightweight"
+            )
+            ;;
+    esac
+
+    model_labels+=("Let me pick my own model")
+    _present_model_choices model_ids model_names model_labels "${default_idx}"
+}
+
+# ── Shared: present choices and set SELECTED_MODEL_ID/NAME ────────────────
+_present_model_choices() {
+    local -n _ids=$1
+    local -n _names=$2
+    local -n _labels=$3
+    local _default=$4
+
+    local choice
+    choice=$(prompt_choice "Which model would you like to run?" _labels "${_default}")
+
+    if [[ "${choice}" == "Let me pick my own model" ]]; then
+        if [[ "${CLAWSPARK_DEFAULTS}" == "true" ]]; then
+            SELECTED_MODEL_ID="${_ids[$_default]}"
+            SELECTED_MODEL_NAME="${_names[$_default]}"
+        else
+            printf '\n  %sEnter the Ollama model ID (e.g. llama3.1:8b):%s ' "${BOLD}" "${RESET}" >/dev/tty
+            local custom_id
+            read -r custom_id </dev/tty || custom_id=""
+            if [[ -z "${custom_id}" ]]; then
+                log_warn "No model entered -- falling back to default."
+                SELECTED_MODEL_ID="${_ids[$_default]}"
+                SELECTED_MODEL_NAME="${_names[$_default]}"
+            else
+                SELECTED_MODEL_ID="${custom_id}"
+                SELECTED_MODEL_NAME="${custom_id}"
+            fi
+        fi
+    else
+        local i found=false
+        for i in $(seq 0 $(( ${#_labels[@]} - 2 ))); do
+            if [[ "${_labels[$i]}" == "${choice}" ]]; then
+                SELECTED_MODEL_ID="${_ids[$i]}"
+                SELECTED_MODEL_NAME="${_names[$i]}"
+                found=true
+                break
+            fi
+        done
+        if [[ "${found}" != "true" ]]; then
+            log_warn "Could not match selection -- using default model."
+            SELECTED_MODEL_ID="${_ids[$_default]}"
+            SELECTED_MODEL_NAME="${_names[$_default]}"
+        fi
+    fi
+}
+
+# ── Install llmfit if not present ─────────────────────────────────────────
+_ensure_llmfit() {
+    if command -v llmfit &>/dev/null; then
+        return 0
+    fi
+
+    log_info "Installing llmfit for hardware-aware model selection..."
+    printf '  %s->%s Installing llmfit ... ' "${CYAN}" "${RESET}" >/dev/tty
+
+    if curl -fsSL https://llmfit.axjns.dev/install.sh | sh >> "${CLAWSPARK_LOG}" 2>&1; then
+        hash -r 2>/dev/null || true
+        if command -v llmfit &>/dev/null; then
+            printf '%sOK%s\n' "${GREEN}" "${RESET}" >/dev/tty
+            return 0
+        fi
+        # Check common install locations
+        local p
+        for p in "${HOME}/.local/bin" "${HOME}/bin" "${HOME}/.cargo/bin" "/usr/local/bin"; do
+            if [[ -x "${p}/llmfit" ]]; then
+                export PATH="${p}:${PATH}"
+                printf '%sOK%s\n' "${GREEN}" "${RESET}" >/dev/tty
+                return 0
+            fi
+        done
+    fi
+
+    printf '%sskipped%s\n' "${YELLOW}" "${RESET}" >/dev/tty
+    log_warn "Could not install llmfit -- using curated model list."
+    return 1
+}
+
+# ── Parse llmfit JSON and map to Ollama model IDs ─────────────────────────
+_parse_llmfit_to_ollama() {
+    local json="$1"
+
+    python3 -c "
+import json, sys, re
+
+# Map llmfit HF-style model names to Ollama model IDs.
+# Each entry: (compiled_regex, ollama_template)
+# Templates use {size} for parameter count extracted from the name/param field.
+PATTERNS = [
+    # Qwen family
+    (r'(?i)qwen.*3\.5.*35b.*a3b',     'qwen3.5:35b-a3b'),
+    (r'(?i)qwen.*3\.5.*122b',         'qwen3.5:122b'),
+    (r'(?i)qwen.*3\.5.*(\d+)b',       'qwen3.5:{size}b'),
+    (r'(?i)qwen.*?3[^.].*?(\d+)b',    'qwen3:{size}b'),
+    (r'(?i)qwen.*2\.5.*(\d+)b',       'qwen2.5:{size}b'),
+    (r'(?i)qwen.*2.*(\d+)b',          'qwen2:{size}b'),
+    # Llama family
+    (r'(?i)llama.*3\.3.*(\d+)b',      'llama3.3:{size}b'),
+    (r'(?i)llama.*3\.1.*(\d+)b',      'llama3.1:{size}b'),
+    (r'(?i)llama.*3.*(\d+)b',         'llama3:{size}b'),
+    # Microsoft Phi
+    (r'(?i)phi.*4.*mini',             'phi4-mini'),
+    (r'(?i)phi.*4.*(\d+)b',          'phi4:{size}b'),
+    (r'(?i)phi.*3.*mini',            'phi3:mini'),
+    (r'(?i)phi.*3.*(\d+)b',          'phi3:{size}b'),
+    # Google Gemma
+    (r'(?i)gemma.*3.*(\d+)b',        'gemma3:{size}b'),
+    (r'(?i)gemma.*2.*(\d+)b',        'gemma2:{size}b'),
+    # Mistral
+    (r'(?i)codestral.*(\d+)b',       'codestral:{size}b'),
+    (r'(?i)mistral.*nemo',           'mistral-nemo'),
+    (r'(?i)mistral.*large.*(\d+)b',  'mistral-large:{size}b'),
+    (r'(?i)mistral.*small.*(\d+)b',  'mistral-small:{size}b'),
+    (r'(?i)mixtral.*(\d+)x(\d+)b',  'mixtral:{size2}x{size}b'),
+    (r'(?i)mistral.*(\d+)b',        'mistral:{size}b'),
+    # DeepSeek
+    (r'(?i)deepseek.*r1.*(\d+)b',   'deepseek-r1:{size}b'),
+    (r'(?i)deepseek.*v3',           'deepseek-v3'),
+    (r'(?i)deepseek.*v2.*(\d+)b',   'deepseek-v2:{size}b'),
+    # NVIDIA
+    (r'(?i)nemotron.*nano',          'nemotron-3-nano'),
+    (r'(?i)nemotron.*mini.*(\d+)b',  'nemotron-mini:{size}b'),
+    # GLM
+    (r'(?i)glm.*4.*flash',           'glm-4.7-flash'),
+    (r'(?i)glm.*4.*(\d+)b',          'glm4:{size}b'),
+    # Cohere
+    (r'(?i)command.*r.*plus.*(\d+)b','command-r-plus:{size}b'),
+    (r'(?i)command.*r.*(\d+)b',      'command-r:{size}b'),
+    # StarCoder / Code models
+    (r'(?i)starcoder.*2.*(\d+)b',    'starcoder2:{size}b'),
+    # Yi
+    (r'(?i)yi.*1\.5.*(\d+)b',        'yi:1.5-{size}b'),
+    (r'(?i)yi.*(\d+)b',              'yi:{size}b'),
+]
+
+def map_to_ollama(name, param_count):
+    text = name + ' ' + param_count
+    for pattern, template in PATTERNS:
+        m = re.search(pattern, text)
+        if m:
+            groups = m.groups()
+            result = template
+            if '{size}' in result:
+                size = groups[0] if groups else ''
+                if not size:
+                    pm = re.search(r'(\d+)', param_count)
+                    size = pm.group(1) if pm else ''
+                result = result.replace('{size}', size.lower())
+            if '{size2}' in result and len(groups) >= 2:
+                result = result.replace('{size2}', groups[1].lower())
+            return result
+    return None
+
+data = json.loads(sys.argv[1])
+models = data.get('models', [])
+seen = set()
+results = []
+
+for m in models:
+    ollama_id = map_to_ollama(m.get('name', ''), m.get('parameter_count', ''))
+    if not ollama_id or ollama_id in seen:
+        continue
+    seen.add(ollama_id)
+
+    score = m.get('score', 0)
+    tps = m.get('estimated_tps', 0)
+    fit = m.get('fit_level', 'Unknown')
+    quant = m.get('best_quant', '')
+    params = m.get('parameter_count', '')
+
+    label = f'{params} {quant} -- Score {score:.0f}, ~{tps:.0f} tok/s, {fit} fit'
+    if results:
+        label_prefix = ''
+    else:
+        label_prefix = '(recommended) '
+
+    print(f'{ollama_id}|{ollama_id}|{label_prefix}{label}')
+    results.append(ollama_id)
+    if len(results) >= 5:
+        break
+" "${json}"
 }
