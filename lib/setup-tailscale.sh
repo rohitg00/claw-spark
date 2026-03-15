@@ -84,15 +84,24 @@ print(dns_name.rstrip('.'))
     # The gateway and node host keep running unchanged -- no restart needed.
     log_info "Setting up tailscale serve to proxy to OpenClaw gateway..."
 
-    # Proxy HTTPS traffic to the local gateway
-    if tailscale serve --bg --https 443 http://127.0.0.1:18789 >> "${CLAWSPARK_LOG}" 2>&1; then
+    # Proxy HTTPS traffic to the local gateway.
+    # Needs sudo on most systems. Use timeout to avoid hanging.
+    local serve_ok=false
+    if timeout 15 sudo tailscale serve --bg --https 443 http://127.0.0.1:18789 >> "${CLAWSPARK_LOG}" 2>&1; then
+        serve_ok=true
         log_success "Tailscale serve configured (HTTPS -> localhost:18789)."
-    elif tailscale serve --bg http://127.0.0.1:18789 >> "${CLAWSPARK_LOG}" 2>&1; then
-        # Older tailscale versions use simpler syntax
+    elif timeout 15 sudo tailscale serve --bg http://127.0.0.1:18789 >> "${CLAWSPARK_LOG}" 2>&1; then
+        serve_ok=true
         log_success "Tailscale serve configured (-> localhost:18789)."
-    else
-        log_warn "tailscale serve failed. You can set it up manually:"
-        log_info "  tailscale serve --bg http://127.0.0.1:18789"
+    elif timeout 15 tailscale serve --bg http://127.0.0.1:18789 >> "${CLAWSPARK_LOG}" 2>&1; then
+        serve_ok=true
+        log_success "Tailscale serve configured (-> localhost:18789)."
+    fi
+
+    if [[ "${serve_ok}" != "true" ]]; then
+        log_warn "tailscale serve could not be configured automatically."
+        log_info "You can set it up manually later:"
+        log_info "  sudo tailscale serve --bg http://127.0.0.1:18789"
     fi
 
     # Save the URL for the final install message
