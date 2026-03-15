@@ -428,6 +428,8 @@ _write_workspace_files() {
 
     for ws_dir in "${dirs[@]}"; do
         mkdir -p "${ws_dir}"
+        # Remove read-only from previous installs so we can overwrite
+        chmod 644 "${ws_dir}/SOUL.md" "${ws_dir}/TOOLS.md" 2>/dev/null || true
     done
 
     # ── Personal agent: TOOLS.md with full tool set ────────────────────
