@@ -51,10 +51,11 @@ DGX Spark has a curated model list tested on real hardware.
 | Jetson AGX Orin | 64 GB unified | SSH into Jetson, run the install command |
 | RTX 5090 / 4090 | 24 GB VRAM | Open a terminal on your desktop, run the install command |
 | RTX 4080 / 4070 | 8-16 GB VRAM | Open a terminal on your desktop, run the install command |
+| Mac M1/M2/M3/M4 | 16-128 GB unified | Open Terminal, run the install command |
 
-These platforms use [llmfit](https://github.com/AlexsJones/llmfit) to detect your hardware and recommend the best model that fits your VRAM/RAM, then verify it exists on Ollama before offering it. Requirements: Linux with NVIDIA drivers and CUDA installed, `nvidia-smi` working.
+NVIDIA platforms use [llmfit](https://github.com/AlexsJones/llmfit) to detect your hardware and recommend the best model that fits your VRAM/RAM, then verify it exists on Ollama before offering it. macOS uses the curated fallback list. All platforms require Ollama to be installed (the installer handles this).
 
-**Not yet supported:** macOS (Apple Silicon), AMD GPUs, Intel Arc. PRs welcome.
+**Not yet tested:** AMD GPUs, Intel Arc. PRs welcome.
 
 ## The 3 Questions
 
