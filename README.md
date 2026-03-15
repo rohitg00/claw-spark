@@ -25,7 +25,7 @@ That's it. Go grab a coffee. Come back to a fully working, fully private AI assi
 ## What happens when you run it
 
 1. **Detects your hardware** (DGX Spark, Jetson, RTX GPUs)
-2. **Picks the best model** for your specific GPU and memory
+2. **Picks the best model** using [llmfit](https://github.com/AlexsJones/llmfit) for hardware-aware selection
 3. **Installs everything** (Ollama, OpenClaw, skills, dependencies)
 4. **Enables voice** (local Whisper transcription, zero cloud)
 5. **Sets up your dashboard** (built-in chat UI + ClawMetry metrics)
@@ -35,15 +35,15 @@ Total time: about 5 minutes on DGX Spark with a decent connection.
 
 ## Supported Hardware
 
-| Hardware | Memory | Recommended Model | Tokens/sec |
+| Hardware | Memory | Default Model | Tokens/sec |
 |---|---|---|---|
-| DGX Spark | 128 GB unified | Qwen 3.5 35B-A3B / 122B | ~59 |
-| Jetson AGX Thor | 128 GB unified | Qwen 3.5 35B-A3B (MoE) | ~30 |
-| Jetson AGX Orin | 64 GB unified | Nemotron 3 Nano 30B | ~25 |
-| RTX 5090 / 4090 | 24 GB VRAM | Qwen 3.5 35B-A3B (Q4) | ~40 |
-| RTX 4080 | 16 GB VRAM | GLM 4.7 Flash | ~35 |
+| DGX Spark | 128 GB unified | Qwen 3.5 35B-A3B | ~59 (measured) |
+| Jetson AGX Thor | 128 GB unified | llmfit-selected | varies |
+| Jetson AGX Orin | 64 GB unified | llmfit-selected | varies |
+| RTX 5090 / 4090 | 24 GB VRAM | llmfit-selected | varies |
+| RTX 4080 / 4070 | 8-16 GB VRAM | llmfit-selected | varies |
 
-All models run 100% locally. No cloud fallback by default.
+DGX Spark models are curated and tested on real hardware. All other platforms use llmfit for automatic hardware-aware model selection with Ollama verification.
 
 ## The 3 Questions
 
@@ -51,7 +51,7 @@ The installer asks you three things. That's it.
 
 ```
 [1/3] Which model?
-      > Balanced (recommended) / Quality / Lightweight
+      > 5 models ranked by llmfit score + Ollama availability
 
 [2/3] Connect a messaging platform? (Web UI is always available)
       > WhatsApp / Telegram / Both / Skip
@@ -66,61 +66,41 @@ Want zero interaction? Use `--defaults`
 curl -fsSL https://clawspark.dev/install.sh | bash -s -- --defaults
 ```
 
-This picks Balanced model + WhatsApp + no Tailscale.
-
 ## Skills
 
-Skills are OpenClaw plugins that give your agent new abilities. clawspark ships with a curated default set in `configs/skills.yaml`:
+Skills are OpenClaw plugins that give your agent new abilities. clawspark ships with 10 verified skills:
 
 | Category | Skills |
 |---|---|
-| Core | local-whisper, prompt-guard, self-improvement, memory-setup |
+| Core | local-whisper, self-improvement, memory-setup |
 | Voice | whatsapp-voice-chat-integration-open-source |
-| Productivity | remind-me, deep-research, agent-browser, coding-agent, excel |
+| Productivity | deep-research-pro, agent-browser |
 | Knowledge | second-brain, proactive-agent |
+| Web Search | ddg-web-search, local-web-search-skill |
 
 **Add or remove skills:**
 
 ```bash
-# Edit the config
-nano configs/skills.yaml
-
-# Apply changes
+clawspark skills add <name>
+clawspark skills remove <name>
 clawspark skills sync
-```
-
-You can also add community skills:
-
-```yaml
-skills:
-  custom:
-    - name: my-cool-skill
-      source: https://github.com/user/my-cool-skill
 ```
 
 ## Voice Notes
 
-Send a WhatsApp voice note to your agent. It gets transcribed locally using Whisper (no audio ever leaves your machine) and the agent responds to the text. It works the same way you'd text the agent, just talk instead.
+Send a WhatsApp voice note to your agent. It gets transcribed locally using Whisper (no audio ever leaves your machine) and the agent responds to the text.
 
-Supported languages: everything Whisper supports (99+ languages).
-
-```bash
-# Check voice status
-clawspark voice status
-
-# Switch Whisper model (tiny/base/small/medium/large)
-clawspark voice model large
-```
+Whisper model size is matched to your hardware: large-v3 on DGX Spark, small on Jetson, base on RTX.
 
 ## Dashboard
 
 clawspark gives you two web interfaces out of the box:
 
 **Chat UI** (built into OpenClaw): `http://localhost:18789/__openclaw__/canvas/`
-Talk to your AI agent directly from the browser. Manage sessions, skills, and channels.
+Talk to your AI agent directly from the browser.
 
 **Metrics Dashboard** (ClawMetry): `http://localhost:8900`
-Track token usage, costs per session, agent activity, cron jobs, and model performance.
+Track token usage, agent activity, and model performance.
 
 Both bind to localhost by default. Use Tailscale to access them securely from anywhere.
 
@@ -128,20 +108,17 @@ Both bind to localhost by default. Use Tailscale to access them securely from an
 
 clawspark takes security seriously because your AI agent has access to your data.
 
-**What the hardening does:**
-- Sets up UFW firewall rules (only required ports open)
-- Generates unique auth tokens for all services
-- Enables encrypted storage for conversation history
-- Configures Ollama to listen on localhost only
-- Disables telemetry in all components
-
-Air-gap mode is available for advanced users who need complete network isolation: `clawspark airgap on`
+- UFW firewall rules (only required ports open)
+- Unique 256-bit auth token for the gateway API
+- Gateway binds to localhost only
+- Context-aware tool restrictions (full tools in DMs, Q&A only in groups)
+- SOUL.md + TOOLS.md with absolute rules (no credential disclosure, no self-modification)
+- Workspace files set to read-only (chmod 444)
+- Air-gap mode for complete network isolation: `clawspark airgap on`
 
 ## Remote Access
 
-clawspark can set up Tailscale during install, giving you secure HTTPS access from any device on your Tailnet.
-
-Access your AI assistant from your phone in the USA while the DGX Spark runs at home. No port forwarding, no VPN configuration.
+clawspark can set up Tailscale during install for secure HTTPS access from any device on your Tailnet.
 
 ```bash
 clawspark tailscale setup
@@ -154,16 +131,18 @@ clawspark status           # Show system health and running services
 clawspark start            # Start all services
 clawspark stop             # Stop all services
 clawspark restart          # Restart everything
-clawspark update           # Update OpenClaw and skills
+clawspark update           # Update OpenClaw, re-apply patches
+clawspark benchmark        # Run a performance benchmark
 clawspark model list       # Show available models
 clawspark model switch     # Change the active model
 clawspark skills list      # Show installed skills
 clawspark skills sync      # Apply skills.yaml changes
+clawspark tools list       # Show available agent tools
+clawspark tools enable     # Enable optional tools
 clawspark voice status     # Voice transcription status
 clawspark voice model      # Switch Whisper model size
-clawspark dashboard         # Open metrics dashboard
-clawspark tailscale setup   # Configure Tailscale remote access
-clawspark airgap on|off     # Toggle air-gap mode (advanced)
+clawspark tailscale setup  # Configure remote access
+clawspark airgap on|off    # Toggle air-gap mode
 clawspark logs             # Tail all service logs
 clawspark doctor           # Diagnose common issues
 clawspark uninstall        # Remove everything
@@ -175,17 +154,27 @@ clawspark uninstall        # Remove everything
 clawspark uninstall
 ```
 
-This removes all services, models, and configuration. Your conversation history is preserved in `~/.openclaw/backups/` unless you pass `--purge`.
+Removes all services, models, and configuration. Your conversation history is preserved in `~/.openclaw/backups/` unless you pass `--purge`.
+
+## Acknowledgements
+
+clawspark builds on the work of several excellent open-source projects:
+
+- **[OpenClaw](https://github.com/openclaw/openclaw)** -- The AI agent framework that makes all of this possible
+- **[Ollama](https://ollama.com)** -- Local LLM inference engine
+- **[llmfit](https://github.com/AlexsJones/llmfit)** -- Hardware-aware model selection (by Alex Jones)
+- **[Baileys](https://github.com/WhiskeySockets/Baileys)** -- WhatsApp Web client library
+- **[Whisper](https://github.com/openai/whisper)** -- Open-source speech-to-text (by OpenAI)
+- **[ClawMetry](https://github.com/vivekchand/clawmetry)** -- Observability dashboard for OpenClaw
+- **[Qwen](https://github.com/QwenLM/Qwen)** -- The model family that runs beautifully on DGX Spark
 
 ## Contributing
 
-PRs welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting.
-
-The main areas where help is needed:
+PRs welcome. The main areas where help is needed:
+- Testing on different Jetson variants
 - Hardware detection for more GPU models
 - Additional messaging platform integrations
 - New skills
-- Testing on different Jetson variants
 
 ## License
 
@@ -194,3 +183,5 @@ MIT. See [LICENSE](LICENSE).
 ---
 
 Built for people who want AI that works for them, not the other way around.
+
+[clawspark.dev](https://clawspark.dev)
