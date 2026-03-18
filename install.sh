@@ -178,7 +178,7 @@ CLAW
 }
 
 # ── Step 1: Banner ─────────────────────────────────────────────────────────
-log_info "Step 1/14: Welcome"
+log_info "Step 1/18: Welcome"
 _show_banner
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -225,6 +225,20 @@ setup_inference
 log_info "Step 7/18: Installing OpenClaw"
 setup_openclaw
 
+# ── Install the clawspark CLI early so it is available for troubleshooting ──
+if [[ -f "${SCRIPT_DIR}/clawspark" ]]; then
+    sudo cp "${SCRIPT_DIR}/clawspark" /usr/local/bin/clawspark 2>/dev/null || {
+        cp "${SCRIPT_DIR}/clawspark" "${CLAWSPARK_DIR}/clawspark" 2>/dev/null || true
+    }
+    sudo chmod +x /usr/local/bin/clawspark 2>/dev/null || true
+fi
+if [[ -d "${SCRIPT_DIR}/lib" ]]; then
+    cp -r "${SCRIPT_DIR}/lib" "${CLAWSPARK_DIR}/"
+fi
+if [[ -d "${SCRIPT_DIR}/configs" ]]; then
+    cp -r "${SCRIPT_DIR}/configs" "${CLAWSPARK_DIR}/"
+fi
+
 # ── Step 8: Skills ──────────────────────────────────────────────────────────
 log_info "Step 8/18: Installing skills"
 setup_skills
@@ -266,30 +280,25 @@ log_info "Step 17/18: Applying security"
 secure_setup
 
 # ── Start node host (after all config changes are done) ───────────────────
-log_info "Starting node host..."
-_start_node_host || log_warn "Node host failed to start -- you can start it with: clawspark start"
+# Skip if systemd already started the node host (step 16)
+if systemctl is-active --quiet clawspark-nodehost.service 2>/dev/null; then
+    log_info "Node host already running via systemd."
+else
+    log_info "Starting node host..."
+    _start_node_host || log_warn "Node host failed to start -- you can start it with: clawspark start"
+fi
 
 # ── Step 18: Verification ──────────────────────────────────────────────────
 log_info "Step 18/18: Verifying installation"
 verify_installation
 
-# ── Install the clawspark CLI tool ──────────────────────────────────────────
+# ── Final CLI refresh (picks up any changes made during install) ──────────
 if [[ -f "${SCRIPT_DIR}/clawspark" ]]; then
-    log_info "Installing clawspark CLI to /usr/local/bin..."
-    sudo cp "${SCRIPT_DIR}/clawspark" /usr/local/bin/clawspark 2>/dev/null || {
-        cp "${SCRIPT_DIR}/clawspark" "${CLAWSPARK_DIR}/clawspark"
-        log_warn "Could not write to /usr/local/bin — CLI saved to ${CLAWSPARK_DIR}/clawspark"
-    }
+    sudo cp "${SCRIPT_DIR}/clawspark" /usr/local/bin/clawspark 2>/dev/null || true
     sudo chmod +x /usr/local/bin/clawspark 2>/dev/null || true
 fi
-
-# Copy lib and configs to CLAWSPARK_DIR for the CLI to source later
-if [[ -d "${SCRIPT_DIR}/lib" ]]; then
-    cp -r "${SCRIPT_DIR}/lib" "${CLAWSPARK_DIR}/"
-fi
-if [[ -d "${SCRIPT_DIR}/configs" ]]; then
-    cp -r "${SCRIPT_DIR}/configs" "${CLAWSPARK_DIR}/"
-fi
+[[ -d "${SCRIPT_DIR}/lib" ]] && cp -r "${SCRIPT_DIR}/lib" "${CLAWSPARK_DIR}/"
+[[ -d "${SCRIPT_DIR}/configs" ]] && cp -r "${SCRIPT_DIR}/configs" "${CLAWSPARK_DIR}/"
 
 # ── Final message ───────────────────────────────────────────────────────────
 printf '\n'

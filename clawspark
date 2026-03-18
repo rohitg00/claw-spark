@@ -494,10 +494,9 @@ _cmd_benchmark() {
 
     # Determine model from config
     local model_id=""
-    local config_file="${HOME}/.openclaw/openclaw.json"
-    if [[ -f "${config_file}" ]]; then
-        model_id=$(grep -o '"default"[[:space:]]*:[[:space:]]*"[^"]*"' "${config_file}" | head -1 | cut -d'"' -f4)
-    fi
+    model_id=$(openclaw config get agents.defaults.model 2>/dev/null | tr -d '"' || echo "")
+    # Strip the "ollama/" provider prefix for Ollama API calls
+    model_id="${model_id#ollama/}"
     if [[ -z "${model_id}" ]]; then
         model_id=$(ollama list 2>/dev/null | tail -n +2 | head -1 | awk '{print $1}')
     fi

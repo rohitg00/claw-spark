@@ -234,7 +234,7 @@ cfg['tools']['profile'] = 'full'
 cfg.setdefault('channels', {})
 cfg['channels'].setdefault('whatsapp', {})
 cfg['channels']['whatsapp']['groups'] = { '*': { 'requireMention': True } }
-cfg['channels']['whatsapp'].setdefault('groupPolicy', 'open')
+cfg['channels']['whatsapp'].setdefault('groupPolicy', 'disabled')
 cfg['channels']['whatsapp']['groupAllowFrom'] = ['*']
 
 # Remove any stale/invalid keys from previous installs (causes validation errors)

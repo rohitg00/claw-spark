@@ -54,10 +54,12 @@ verify_installation() {
         local oc_ver
         oc_ver=$(openclaw --version 2>/dev/null || echo "unknown")
         local gw_status="gateway not running"
-        if [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]]; then
+        if systemctl is-active --quiet clawspark-gateway.service 2>/dev/null; then
+            gw_status="gateway running (systemd)"
+        elif [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]]; then
             local gw_pid
             gw_pid=$(cat "${CLAWSPARK_DIR}/gateway.pid")
-            if kill -0 "${gw_pid}" 2>/dev/null; then
+            if [[ -n "${gw_pid}" ]] && kill -0 "${gw_pid}" 2>/dev/null; then
                 gw_status="gateway running"
             fi
         fi
@@ -76,10 +78,12 @@ verify_installation() {
     fi
 
     # ── 6b. Node host ─────────────────────────────────────────────────────
-    if [[ -f "${CLAWSPARK_DIR}/node.pid" ]]; then
+    if systemctl is-active --quiet clawspark-nodehost.service 2>/dev/null; then
+        _check_pass "Node host: running (systemd)"
+    elif [[ -f "${CLAWSPARK_DIR}/node.pid" ]]; then
         local node_pid
         node_pid=$(cat "${CLAWSPARK_DIR}/node.pid")
-        if kill -0 "${node_pid}" 2>/dev/null; then
+        if [[ -n "${node_pid}" ]] && kill -0 "${node_pid}" 2>/dev/null; then
             _check_pass "Node host: running (PID ${node_pid})"
         else
             _check_fail "Node host: not running"

@@ -200,15 +200,20 @@ _start_node_host() {
     # Wait for the node to register and create a pairing request
     sleep 5
 
-    # Auto-approve ALL pending device requests (this is a local single-user install)
+    # Auto-approve pending device requests (this is a local single-user install)
     local attempt
     for attempt in 1 2 3; do
         local device_output
         device_output=$(openclaw devices list 2>/dev/null || echo "")
 
-        # Extract request IDs from pending requests (UUID format)
+        # Only extract UUIDs from lines that contain "pending" or "Pending"
+        # to avoid approving already-paired devices or matching non-request UUIDs
         local request_ids
-        request_ids=$(echo "${device_output}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' || true)
+        request_ids=$(echo "${device_output}" | grep -iE 'pending|request' | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' || true)
+        # Fallback: if no "pending" lines but there are UUIDs in a "Requests" section, try those
+        if [[ -z "${request_ids}" ]]; then
+            request_ids=$(echo "${device_output}" | sed -n '/^Request/,/^$/p' | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' || true)
+        fi
 
         if [[ -n "${request_ids}" ]]; then
             local rid
