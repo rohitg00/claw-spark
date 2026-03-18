@@ -244,6 +244,9 @@ cfg.pop('logging', None)
 # browser.mode is not a valid root-level key; clean up the whole browser block if invalid
 if 'browser' in cfg and 'mode' in cfg.get('browser', {}):
     del cfg['browser']
+# Remove sandbox from agents.defaults (breaks network when network:none is set)
+if 'agents' in cfg and 'defaults' in cfg.get('agents', {}):
+    cfg['agents']['defaults'].pop('sandbox', None)
 
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)

@@ -84,6 +84,29 @@ USAGE
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Kill a process from a PID file, then remove the file
+_kill_pid_file() {
+    local pid_file="$1"
+    if [[ -f "${pid_file}" ]]; then
+        local pid
+        pid=$(cat "${pid_file}" 2>/dev/null || echo "")
+        if [[ -n "${pid}" ]] && [[ "${pid}" =~ ^[0-9]+$ ]]; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+        rm -f "${pid_file}"
+    fi
+}
+
+# Also kill by process name pattern as a fallback
+_kill_by_name() {
+    local pattern="$1"
+    pkill -f "${pattern}" 2>/dev/null || true
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  COMMANDS
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -774,25 +797,26 @@ _cmd_logs() {
 _cmd_restart() {
     log_info "Restarting services..."
 
-    local use_systemd=false
-    if [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
-        use_systemd=true
-    fi
+    # Source gateway env
+    local env_file="${HOME}/.openclaw/gateway.env"
+    [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
 
-    # Restart Ollama
+    # Restart Ollama -- if systemd-managed, try sudo but don't fail
     if check_command systemctl && systemctl is-enabled ollama &>/dev/null; then
-        sudo systemctl restart ollama
-        log_success "Ollama restarted via systemctl."
+        if sudo -n systemctl restart ollama 2>/dev/null; then
+            log_success "Ollama restarted via systemctl."
+        elif curl -sf http://127.0.0.1:11434/ &>/dev/null; then
+            log_info "Ollama already running (systemd-managed, no sudo available)."
+        else
+            log_warn "Ollama needs sudo to restart. Run: sudo systemctl restart ollama"
+        fi
     elif [[ -f "${CLAWSPARK_DIR}/ollama.pid" ]]; then
-        local old_pid
-        old_pid=$(cat "${CLAWSPARK_DIR}/ollama.pid")
-        kill "${old_pid}" 2>/dev/null || true
+        kill "$(cat "${CLAWSPARK_DIR}/ollama.pid")" 2>/dev/null || true
         sleep 1
         nohup ollama serve >> "${CLAWSPARK_DIR}/ollama.log" 2>&1 &
         echo $! > "${CLAWSPARK_DIR}/ollama.pid"
         log_success "Ollama restarted (PID $!)."
     else
-        log_info "Starting Ollama..."
         nohup ollama serve >> "${CLAWSPARK_DIR}/ollama.log" 2>&1 &
         echo $! > "${CLAWSPARK_DIR}/ollama.pid"
         log_success "Ollama started (PID $!)."
@@ -806,79 +830,53 @@ _cmd_restart() {
         sleep 1
     done
 
-    # Source gateway env for PID-based services
-    local env_file="${HOME}/.openclaw/gateway.env"
+    # Kill existing gateway and node host
+    _kill_pid_file "${CLAWSPARK_DIR}/gateway.pid"
+    _kill_pid_file "${CLAWSPARK_DIR}/node.pid"
+    _kill_pid_file "${CLAWSPARK_DIR}/dashboard.pid"
+    sleep 2
 
-    # Restart gateway
-    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
-        sudo systemctl restart clawspark-gateway.service
-        log_success "Gateway restarted via systemd."
-    elif check_command openclaw; then
-        if [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]]; then
-            local gw_pid
-            gw_pid=$(cat "${CLAWSPARK_DIR}/gateway.pid")
-            kill "${gw_pid}" 2>/dev/null || true
-            sleep 1
-        fi
-        [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+    # Start gateway
+    if check_command openclaw; then
         nohup openclaw gateway run --bind loopback > "${CLAWSPARK_DIR}/gateway.log" 2>&1 &
         echo $! > "${CLAWSPARK_DIR}/gateway.pid"
-        log_success "Gateway restarted (PID $!)."
+        log_success "Gateway started (PID $!)."
     else
         log_warn "openclaw not found, gateway not started."
+        return 1
     fi
 
     sleep 3
 
-    # Restart node host
-    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-nodehost.service ]]; then
-        sudo systemctl restart clawspark-nodehost.service
-        log_success "Node host restarted via systemd."
-    elif check_command openclaw; then
-        if [[ -f "${CLAWSPARK_DIR}/node.pid" ]]; then
-            kill "$(cat "${CLAWSPARK_DIR}/node.pid")" 2>/dev/null || true
-            sleep 1
-        fi
-        [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
-        nohup openclaw node run --host 127.0.0.1 --port 18789 > "${CLAWSPARK_DIR}/node.log" 2>&1 &
-        echo $! > "${CLAWSPARK_DIR}/node.pid"
-        log_success "Node host restarted (PID $!)."
-    fi
+    # Start node host
+    nohup openclaw node run --host 127.0.0.1 --port 18789 > "${CLAWSPARK_DIR}/node.log" 2>&1 &
+    echo $! > "${CLAWSPARK_DIR}/node.pid"
+    log_success "Node host started (PID $!)."
 
-    # Restart dashboard
-    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-dashboard.service ]]; then
-        sudo systemctl restart clawspark-dashboard.service
-        log_success "Dashboard restarted via systemd."
-    else
-        if [[ -f "${CLAWSPARK_DIR}/dashboard.pid" ]]; then
-            kill "$(cat "${CLAWSPARK_DIR}/dashboard.pid")" 2>/dev/null || true
-            sleep 1
-        fi
-        _start_dashboard
-    fi
+    # Start dashboard
+    _start_dashboard
+
+    sleep 2
+    log_success "All services restarted."
 }
 
 # ── start ──────────────────────────────────────────────────────────────────
 _cmd_start() {
     log_info "Starting services..."
 
-    local use_systemd=false
-    if [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
-        use_systemd=true
-    fi
+    # Source gateway env
+    local env_file="${HOME}/.openclaw/gateway.env"
+    [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
 
     # Start Ollama
-    if check_command systemctl && systemctl is-enabled ollama &>/dev/null; then
-        sudo systemctl start ollama
-        log_success "Ollama started via systemctl."
+    if curl -sf http://127.0.0.1:11434/ &>/dev/null; then
+        log_info "Ollama already running."
+    elif check_command systemctl && systemctl is-enabled ollama &>/dev/null; then
+        sudo -n systemctl start ollama 2>/dev/null || log_warn "Ollama needs sudo to start. Run: sudo systemctl start ollama"
     else
-        if [[ -f "${CLAWSPARK_DIR}/ollama.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/ollama.pid")" 2>/dev/null; then
-            log_info "Ollama already running."
-        else
-            nohup ollama serve >> "${CLAWSPARK_DIR}/ollama.log" 2>&1 &
-            echo $! > "${CLAWSPARK_DIR}/ollama.pid"
-            log_success "Ollama started (PID $!)."
-        fi
+        nohup ollama serve >> "${CLAWSPARK_DIR}/ollama.log" 2>&1 &
+        echo $! > "${CLAWSPARK_DIR}/ollama.pid"
+        log_success "Ollama started (PID $!)."
     fi
 
     # Wait for Ollama API
@@ -889,55 +887,33 @@ _cmd_start() {
         sleep 1
     done
 
-    # Source gateway env for PID-based services
-    local env_file="${HOME}/.openclaw/gateway.env"
-
-    # Start gateway
-    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
-        sudo systemctl start clawspark-gateway.service
-        log_success "Gateway started via systemd."
+    # Start gateway (if not already running)
+    if [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/gateway.pid" 2>/dev/null)" 2>/dev/null; then
+        log_info "Gateway already running."
     elif check_command openclaw; then
-        if [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/gateway.pid")" 2>/dev/null; then
-            log_info "Gateway already running."
-        else
-            [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
-            nohup openclaw gateway run --bind loopback > "${CLAWSPARK_DIR}/gateway.log" 2>&1 &
-            echo $! > "${CLAWSPARK_DIR}/gateway.pid"
-            log_success "Gateway started (PID $!)."
-        fi
+        nohup openclaw gateway run --bind loopback > "${CLAWSPARK_DIR}/gateway.log" 2>&1 &
+        echo $! > "${CLAWSPARK_DIR}/gateway.pid"
+        log_success "Gateway started (PID $!)."
+        sleep 3
     else
         log_warn "openclaw not found, gateway not started."
+        return 1
     fi
 
-    sleep 3
-
-    # Start node host
-    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-nodehost.service ]]; then
-        sudo systemctl start clawspark-nodehost.service
-        log_success "Node host started via systemd."
+    # Start node host (if not already running)
+    if [[ -f "${CLAWSPARK_DIR}/node.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/node.pid" 2>/dev/null)" 2>/dev/null; then
+        log_info "Node host already running."
     elif check_command openclaw; then
-        if [[ -f "${CLAWSPARK_DIR}/node.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/node.pid")" 2>/dev/null; then
-            log_info "Node host already running."
-        else
-            [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
-            nohup openclaw node run --host 127.0.0.1 --port 18789 > "${CLAWSPARK_DIR}/node.log" 2>&1 &
-            echo $! > "${CLAWSPARK_DIR}/node.pid"
-            log_success "Node host started (PID $!)."
-        fi
+        nohup openclaw node run --host 127.0.0.1 --port 18789 > "${CLAWSPARK_DIR}/node.log" 2>&1 &
+        echo $! > "${CLAWSPARK_DIR}/node.pid"
+        log_success "Node host started (PID $!)."
     fi
 
     # Start dashboard
-    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-dashboard.service ]]; then
-        sudo systemctl start clawspark-dashboard.service
-        log_success "Dashboard started via systemd."
+    if [[ -f "${CLAWSPARK_DIR}/dashboard.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/dashboard.pid" 2>/dev/null)" 2>/dev/null; then
+        log_info "Dashboard already running."
     else
-        if [[ -f "${CLAWSPARK_DIR}/dashboard.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/dashboard.pid")" 2>/dev/null; then
-            log_info "Dashboard already running."
-        elif curl -sf --max-time 2 http://127.0.0.1:8900 &>/dev/null; then
-            log_info "Dashboard already running."
-        else
-            _start_dashboard
-        fi
+        _start_dashboard
     fi
 }
 
@@ -950,66 +926,28 @@ _cmd_stop() {
 
     log_info "Stopping services..."
 
-    local use_systemd=false
-    if [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
-        use_systemd=true
-    fi
-
     # Stop dashboard
-    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-dashboard.service ]]; then
-        sudo systemctl stop clawspark-dashboard.service
-        log_success "Dashboard stopped via systemd."
-    elif [[ -f "${CLAWSPARK_DIR}/dashboard.pid" ]]; then
-        local dash_pid
-        dash_pid=$(cat "${CLAWSPARK_DIR}/dashboard.pid")
-        kill "${dash_pid}" 2>/dev/null || true
-        rm -f "${CLAWSPARK_DIR}/dashboard.pid"
-        log_success "Dashboard stopped (was PID ${dash_pid})."
-    else
-        log_info "Dashboard is not running."
-    fi
+    _kill_pid_file "${CLAWSPARK_DIR}/dashboard.pid"
+    _kill_by_name "clawmetry"
+    log_success "Dashboard stopped."
 
     # Stop node host
-    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-nodehost.service ]]; then
-        sudo systemctl stop clawspark-nodehost.service
-        log_success "Node host stopped via systemd."
-    elif [[ -f "${CLAWSPARK_DIR}/node.pid" ]]; then
-        local node_pid
-        node_pid=$(cat "${CLAWSPARK_DIR}/node.pid")
-        kill "${node_pid}" 2>/dev/null || true
-        rm -f "${CLAWSPARK_DIR}/node.pid"
-        log_success "Node host stopped (was PID ${node_pid})."
-    else
-        log_info "Node host is not running."
-    fi
+    _kill_pid_file "${CLAWSPARK_DIR}/node.pid"
+    _kill_by_name "openclaw-node"
+    log_success "Node host stopped."
 
     # Stop gateway
-    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
-        sudo systemctl stop clawspark-gateway.service
-        log_success "Gateway stopped via systemd."
-    elif [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]]; then
-        local gw_pid
-        gw_pid=$(cat "${CLAWSPARK_DIR}/gateway.pid")
-        kill "${gw_pid}" 2>/dev/null || true
-        rm -f "${CLAWSPARK_DIR}/gateway.pid"
-        log_success "Gateway stopped (was PID ${gw_pid})."
-    else
-        log_info "Gateway is not running."
-    fi
+    _kill_pid_file "${CLAWSPARK_DIR}/gateway.pid"
+    _kill_by_name "openclaw-gateway"
+    log_success "Gateway stopped."
 
     # Stop Ollama only with --all flag
     if ${stop_all}; then
         if check_command systemctl && systemctl is-enabled ollama &>/dev/null; then
-            sudo systemctl stop ollama
-            log_success "Ollama stopped via systemctl."
-        elif [[ -f "${CLAWSPARK_DIR}/ollama.pid" ]]; then
-            local ollama_pid
-            ollama_pid=$(cat "${CLAWSPARK_DIR}/ollama.pid")
-            kill "${ollama_pid}" 2>/dev/null || true
-            rm -f "${CLAWSPARK_DIR}/ollama.pid"
-            log_success "Ollama stopped (was PID ${ollama_pid})."
+            sudo -n systemctl stop ollama 2>/dev/null || log_warn "Ollama needs sudo to stop. Run: sudo systemctl stop ollama"
         else
-            log_info "Ollama is not running."
+            _kill_pid_file "${CLAWSPARK_DIR}/ollama.pid"
+            log_success "Ollama stopped."
         fi
     else
         log_info "Ollama left running (shared service). Use --all to also stop Ollama."
@@ -1561,13 +1499,15 @@ _cmd_uninstall() {
 }
 
 _inline_uninstall() {
-    # Stop services
-    if [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]]; then
-        kill "$(cat "${CLAWSPARK_DIR}/gateway.pid")" 2>/dev/null || true
-    fi
-    if [[ -f "${CLAWSPARK_DIR}/ollama.pid" ]]; then
-        kill "$(cat "${CLAWSPARK_DIR}/ollama.pid")" 2>/dev/null || true
-    fi
+    # Stop all services
+    _kill_pid_file "${CLAWSPARK_DIR}/gateway.pid"
+    _kill_pid_file "${CLAWSPARK_DIR}/node.pid"
+    _kill_pid_file "${CLAWSPARK_DIR}/dashboard.pid"
+    _kill_pid_file "${CLAWSPARK_DIR}/ollama.pid"
+    _kill_by_name "openclaw-gateway"
+    _kill_by_name "openclaw-node"
+    _kill_by_name "clawmetry"
+    sleep 2
 
     # Uninstall OpenClaw
     if check_command openclaw; then
@@ -1578,7 +1518,7 @@ _inline_uninstall() {
     # Remove configs
     rm -rf "${HOME}/.openclaw"
     rm -rf "${CLAWSPARK_DIR}"
-    sudo rm -f /usr/local/bin/clawspark 2>/dev/null || true
+    sudo -n rm -f /usr/local/bin/clawspark 2>/dev/null || rm -f "${HOME}/.local/bin/clawspark" 2>/dev/null || true
 
     log_success "clawspark has been fully removed."
 }
