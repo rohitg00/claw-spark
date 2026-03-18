@@ -12,7 +12,7 @@ setup_models() {
 
     # ── Vision model ──────────────────────────────────────────────────────
     # Check for vision-capable models already pulled in Ollama
-    local vision_models=("qwen2.5-vl" "llava" "minicpm-v" "llama3.2-vision" "moondream")
+    local vision_models=("qwen2.5vl" "qwen2.5-vl" "llava" "minicpm-v" "llama3.2-vision" "moondream")
     local found_vision=""
 
     for vm in "${vision_models[@]}"; do
@@ -31,15 +31,15 @@ setup_models() {
     else
         # No vision model found -- pull one automatically
         # qwen2.5-vl:7b is a good balance of quality and size (~5GB)
-        local vision_choice="qwen2.5-vl:7b"
+        local vision_choice="qwen2.5vl:7b"
         log_info "No vision model found. Pulling ${vision_choice} for image analysis (~5GB)..."
         (ollama pull "${vision_choice}") >> "${CLAWSPARK_LOG}" 2>&1 &
         spinner $! "Pulling ${vision_choice}..."
-        if ollama list 2>/dev/null | grep -qi "qwen2.5-vl"; then
+        if ollama list 2>/dev/null | grep -qi "qwen2.5vl"; then
             openclaw config set agents.defaults.imageModel "ollama/${vision_choice}" >> "${CLAWSPARK_LOG}" 2>&1 || true
             log_success "Vision model configured: ollama/${vision_choice}"
         else
-            log_warn "Vision model pull failed. You can add one later: ollama pull qwen2.5-vl:7b"
+            log_warn "Vision model pull failed. You can add one later: ollama pull qwen2.5vl:7b"
         fi
     fi
 
