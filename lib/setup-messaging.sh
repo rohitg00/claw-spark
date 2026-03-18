@@ -177,6 +177,11 @@ _start_node_host() {
     local node_log="${CLAWSPARK_DIR}/node.log"
     local node_pid_file="${CLAWSPARK_DIR}/node.pid"
 
+    # Ensure workspace directory exists and is writable
+    local workspace="${HOME}/workspace"
+    mkdir -p "${workspace}"
+    openclaw config set agents.defaults.workspace "${workspace}" >> "${CLAWSPARK_LOG}" 2>&1 || true
+
     # Kill existing node host if running
     if [[ -f "${node_pid_file}" ]]; then
         local old_pid
@@ -192,27 +197,36 @@ _start_node_host() {
     local node_pid=$!
     echo "${node_pid}" > "${node_pid_file}"
 
-    # Wait for the node to connect and create a pairing request
-    sleep 3
+    # Wait for the node to register and create a pairing request
+    sleep 5
 
-    # Auto-approve any pending device pairing requests from the local node
-    local pending
-    pending=$(openclaw devices list --json 2>/dev/null || echo "")
-    if echo "${pending}" | grep -q '"role":"node"'; then
+    # Auto-approve ALL pending device requests (this is a local single-user install)
+    local attempt
+    for attempt in 1 2 3; do
+        local device_output
+        device_output=$(openclaw devices list 2>/dev/null || echo "")
+
+        # Extract request IDs from pending requests (UUID format)
         local request_ids
-        request_ids=$(echo "${pending}" | grep -o '"requestId":"[^"]*"' | cut -d'"' -f4)
-        for rid in ${request_ids}; do
-            openclaw devices approve "${rid}" >> "${CLAWSPARK_LOG}" 2>&1 || true
-            log_info "Auto-approved node pairing: ${rid}"
-        done
-        # Restart node host after approval so it connects with the pairing token
-        kill "${node_pid}" 2>/dev/null || true
-        sleep 1
-        nohup openclaw node run --host 127.0.0.1 --port 18789 > "${node_log}" 2>&1 &
-        node_pid=$!
-        echo "${node_pid}" > "${node_pid_file}"
-        sleep 3
-    fi
+        request_ids=$(echo "${device_output}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' || true)
+
+        if [[ -n "${request_ids}" ]]; then
+            local rid
+            for rid in ${request_ids}; do
+                openclaw devices approve "${rid}" >> "${CLAWSPARK_LOG}" 2>&1 && \
+                    log_info "Auto-approved device: ${rid}" || true
+            done
+            # Restart node host after approval so it reconnects with proper auth
+            kill "${node_pid}" 2>/dev/null || true
+            sleep 2
+            nohup openclaw node run --host 127.0.0.1 --port 18789 > "${node_log}" 2>&1 &
+            node_pid=$!
+            echo "${node_pid}" > "${node_pid_file}"
+            sleep 3
+            break
+        fi
+        sleep 2
+    done
 
     if kill -0 "${node_pid}" 2>/dev/null; then
         log_success "Node host running (PID ${node_pid})."

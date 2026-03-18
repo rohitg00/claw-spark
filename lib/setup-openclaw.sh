@@ -190,6 +190,11 @@ _write_openclaw_config() {
     openclaw config set agents.defaults.memorySearch.enabled false >> "${CLAWSPARK_LOG}" 2>&1 || true
     openclaw config set tools.profile full >> "${CLAWSPARK_LOG}" 2>&1 || true
 
+    # Set a writable workspace (default /workspace may be read-only)
+    local workspace="${HOME}/workspace"
+    mkdir -p "${workspace}"
+    openclaw config set agents.defaults.workspace "${workspace}" >> "${CLAWSPARK_LOG}" 2>&1 || true
+
     # Secure the config directory
     chmod 700 "${HOME}/.openclaw"
     mkdir -p "${HOME}/.openclaw/agents/main/sessions"
