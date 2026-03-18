@@ -60,37 +60,33 @@ _sandbox_on() {
         fi
     fi
 
-    # Enable sandbox in openclaw.json
+    # Enable sandbox using the correct OpenClaw schema path: agents.defaults.sandbox
     python3 -c "
 import json, sys
 
 path = sys.argv[1]
-seccomp = sys.argv[2]
 
 with open(path, 'r') as f:
     cfg = json.load(f)
 
-cfg.setdefault('sandbox', {})
-cfg['sandbox']['mode'] = 'non-main'
-cfg['sandbox']['docker'] = {
-    'image': 'clawspark-sandbox:latest',
-    'seccompProfile': seccomp,
-    'networkMode': 'none',
-    'readOnlyRoot': True,
-    'tmpfs': {
-        '/tmp': 'size=100m',
-        '/sandbox/work': 'size=500m'
-    },
-    'capDrop': ['ALL'],
-    'memory': '1g',
-    'cpus': '2',
-    'pidsLimit': 200
+cfg.setdefault('agents', {}).setdefault('defaults', {})
+cfg['agents']['defaults']['sandbox'] = {
+    'mode': 'non-main',
+    'scope': 'session',
+    'docker': {
+        'image': 'clawspark-sandbox:latest',
+        'network': 'none',
+        'readOnlyRoot': True
+    }
 }
+
+# Clean up any invalid root-level sandbox key from previous installs
+cfg.pop('sandbox', None)
 
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)
 print('ok')
-" "${config_file}" "${sandbox_dir}/seccomp-profile.json" 2>> "${CLAWSPARK_LOG}" || {
+" "${config_file}" 2>> "${CLAWSPARK_LOG}" || {
         log_error "Failed to update openclaw.json."
         exit 1
     }
@@ -107,13 +103,8 @@ print('ok')
 _sandbox_off() {
     local config_file="${HOME}/.openclaw/openclaw.json"
 
-    if [[ ! -f "${config_file}" ]]; then
-        log_error "Config not found at ${config_file}. Run install.sh first."
-        exit 1
-    fi
-
-    # Remove sandbox config from openclaw.json
-    python3 -c "
+    if [[ -f "${config_file}" ]]; then
+        python3 -c "
 import json, sys
 
 path = sys.argv[1]
@@ -121,16 +112,18 @@ path = sys.argv[1]
 with open(path, 'r') as f:
     cfg = json.load(f)
 
-if 'sandbox' in cfg:
-    del cfg['sandbox']
+# Remove sandbox from the correct schema path
+if 'agents' in cfg and 'defaults' in cfg['agents']:
+    cfg['agents']['defaults'].pop('sandbox', None)
+
+# Also clean up any invalid root-level key
+cfg.pop('sandbox', None)
 
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)
 print('ok')
-" "${config_file}" 2>> "${CLAWSPARK_LOG}" || {
-        log_error "Failed to update openclaw.json."
-        exit 1
-    }
+" "${config_file}" 2>> "${CLAWSPARK_LOG}" || true
+    fi
 
     # Persist sandbox state
     echo "false" > "${CLAWSPARK_DIR}/sandbox.state"
@@ -189,7 +182,7 @@ _sandbox_status() {
 import json, sys
 with open(sys.argv[1]) as f:
     cfg = json.load(f)
-mode = cfg.get('sandbox', {}).get('mode', 'not configured')
+mode = cfg.get('agents', {}).get('defaults', {}).get('sandbox', {}).get('mode', 'not configured')
 print(mode)
 " "${config_file}" 2>/dev/null || echo "not configured")
     fi

@@ -49,29 +49,54 @@ setup_browser() {
         fi
     fi
 
-    # Configure OpenClaw browser settings in openclaw.json
-    local config_file="${HOME}/.openclaw/openclaw.json"
-    if [[ -f "${config_file}" ]]; then
-        python3 -c "
-import json, sys
+    # Browser config: OpenClaw manages browser via agents.defaults.sandbox.browser
+    # The browser binary path is stored in clawspark's own config for the CLI
+    local cs_config="${CLAWSPARK_DIR}/config.json"
+    python3 -c "
+import json, sys, os
 
 path = sys.argv[1]
 browser_bin = sys.argv[2]
 
-with open(path, 'r') as f:
-    cfg = json.load(f)
+cfg = {}
+if os.path.exists(path):
+    with open(path, 'r') as f:
+        cfg = json.load(f)
 
-cfg.setdefault('browser', {})
-cfg['browser']['mode'] = 'managed'
-cfg['browser']['headless'] = True
-cfg['browser']['executablePath'] = browser_bin
+cfg['browser'] = {
+    'executablePath': browser_bin,
+    'headless': True
+}
 
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)
 print('ok')
-" "${config_file}" "${browser_bin}" 2>> "${CLAWSPARK_LOG}" || {
-            log_warn "Could not configure browser in openclaw.json"
-        }
-        log_success "Browser tool configured (managed, headless)."
+" "${cs_config}" "${browser_bin}" 2>> "${CLAWSPARK_LOG}" || {
+        log_warn "Could not save browser config"
+    }
+
+    # Clean up any invalid root-level browser keys from openclaw.json
+    local oc_config="${HOME}/.openclaw/openclaw.json"
+    if [[ -f "${oc_config}" ]]; then
+        python3 -c "
+import json, sys
+path = sys.argv[1]
+with open(path, 'r') as f:
+    cfg = json.load(f)
+changed = False
+if 'browser' in cfg:
+    if 'mode' in cfg['browser']:
+        del cfg['browser']['mode']
+        changed = True
+    if not cfg['browser']:
+        del cfg['browser']
+        changed = True
+if changed:
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+print('ok')
+" "${oc_config}" 2>> "${CLAWSPARK_LOG}" || true
     fi
+
+    log_success "Browser configured: ${browser_bin} (headless)."
 }

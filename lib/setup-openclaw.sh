@@ -232,12 +232,13 @@ cfg['channels']['whatsapp']['groups'] = { '*': { 'requireMention': True } }
 cfg['channels']['whatsapp'].setdefault('groupPolicy', 'open')
 cfg['channels']['whatsapp']['groupAllowFrom'] = ['*']
 
-# Security hardening: redact sensitive data from logs
-cfg.setdefault('logging', {})
-cfg['logging']['redactSensitive'] = 'tools'
-
-# Remove any stale bindings from previous installs (causes validation errors)
+# Remove any stale/invalid keys from previous installs (causes validation errors)
 cfg.pop('bindings', None)
+cfg.pop('sandbox', None)
+cfg.pop('logging', None)
+# browser.mode is not a valid root-level key; clean up the whole browser block if invalid
+if 'browser' in cfg and 'mode' in cfg.get('browser', {}):
+    del cfg['browser']
 
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)
