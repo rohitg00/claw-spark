@@ -8,13 +8,13 @@
 
 # clawspark
 
-**One command. Private AI assistant. Your hardware.**
+**One command. Private AI agent. Your hardware.**
 
 ```bash
 curl -fsSL https://clawspark.dev/install.sh | bash
 ```
 
-That's it. Go grab a coffee. Come back to a fully working, fully private AI assistant.
+That's it. Go grab a coffee. Come back to a fully working, fully private AI agent that can code, research, browse the web, analyze images, and manage your tasks -- all running on your own hardware.
 
 ---
 
@@ -24,12 +24,15 @@ That's it. Go grab a coffee. Come back to a fully working, fully private AI assi
 
 ## What happens when you run it
 
-1. **Detects your hardware** (DGX Spark, Jetson, RTX GPUs)
+1. **Detects your hardware** (DGX Spark, Jetson, RTX GPUs, Mac)
 2. **Picks the best model** using [llmfit](https://github.com/AlexsJones/llmfit) for hardware-aware selection
 3. **Installs everything** (Ollama, OpenClaw, skills, dependencies)
-4. **Enables voice** (local Whisper transcription, zero cloud)
-5. **Sets up your dashboard** (built-in chat UI + ClawMetry metrics)
-6. **Hardens security** (firewall rules, auth tokens, localhost binding)
+4. **Configures multi-model** (chat model + optional vision model for image analysis)
+5. **Enables voice** (local Whisper transcription, zero cloud)
+6. **Sets up browser automation** (headless Chromium for web tasks)
+7. **Sets up your dashboard** (built-in chat UI + ClawMetry metrics)
+8. **Creates systemd services** (auto-starts on boot, survives reboots)
+9. **Hardens security** (firewall rules, auth tokens, localhost binding, optional Docker sandbox)
 
 Total time: about 5 minutes on DGX Spark with a decent connection.
 
@@ -78,6 +81,25 @@ Want zero interaction? Use `--defaults`
 curl -fsSL https://clawspark.dev/install.sh | bash -s -- --defaults
 ```
 
+## What Your Agent Can Do
+
+clawspark configures OpenClaw with the full tool suite. Your agent can:
+
+| Capability | How it Works |
+|---|---|
+| **Answer questions** | Local LLM via Ollama, no cloud needed |
+| **Search the web** | DuckDuckGo via web_fetch, no API key needed |
+| **Deep research** | Sub-agents run parallel research threads |
+| **Browse websites** | Headless Chromium automation (navigate, click, fill forms, screenshot) |
+| **Analyze images** | Vision model (qwen2.5-vl or similar) for screenshots, photos, diagrams |
+| **Write and run code** | exec + read/write/edit tools for full coding workflows |
+| **Voice notes** | Local Whisper transcription, respond to WhatsApp voice messages |
+| **File management** | Read, write, edit, search files on the host |
+| **Scheduled tasks** | Cron-based automation (daily reports, monitoring, etc.) |
+| **Sub-agent orchestration** | Spawn background agents for parallel tasks |
+
+All of this runs locally. No data leaves your machine.
+
 ## Skills
 
 Skills are OpenClaw plugins that give your agent new abilities. clawspark ships with 10 verified skills:
@@ -90,12 +112,55 @@ Skills are OpenClaw plugins that give your agent new abilities. clawspark ships 
 | Knowledge | second-brain, proactive-agent |
 | Web Search | ddg-web-search, local-web-search-skill |
 
-**Add or remove skills:**
+**Skill packs** -- install curated bundles for specific use cases:
+
+```bash
+clawspark skills pack research     # Deep research + web search (4 skills)
+clawspark skills pack coding       # Code generation + review (2 skills)
+clawspark skills pack productivity # Task management + knowledge (3 skills)
+clawspark skills pack voice        # Voice interaction (2 skills)
+clawspark skills pack full         # Everything (10 skills)
+```
+
+**Add or remove individual skills:**
 
 ```bash
 clawspark skills add <name>
 clawspark skills remove <name>
 clawspark skills sync
+```
+
+## Multi-Model Support
+
+clawspark configures three model slots:
+
+| Slot | Purpose | Example |
+|---|---|---|
+| **Chat model** | Primary conversation and coding | `ollama/qwen3.5:35b-a3b` |
+| **Vision model** | Image analysis and screenshots | `ollama/qwen2.5-vl:7b` |
+| **Image generation** | Create images (optional, needs setup) | Local ComfyUI or API |
+
+```bash
+clawspark model list               # Show all models and their roles
+clawspark model switch <model>     # Change the chat model
+clawspark model vision <model>     # Set the vision model
+```
+
+## Docker Sandbox
+
+Optional sandboxed code execution for sub-agents. When enabled, agent-spawned code runs in isolated Docker containers with:
+
+- No network access (`--network=none`)
+- Read-only root filesystem
+- All capabilities dropped (`--cap-drop=ALL`)
+- Custom seccomp profile blocking dangerous syscalls
+- Memory and CPU limits
+
+```bash
+clawspark sandbox on       # Enable sandboxed execution
+clawspark sandbox off      # Disable (run on host)
+clawspark sandbox status   # Check sandbox configuration
+clawspark sandbox test     # Verify sandbox works
 ```
 
 ## Voice Notes
@@ -126,7 +191,20 @@ clawspark takes security seriously because your AI agent has access to your data
 - Context-aware tool restrictions (full tools in DMs, Q&A only in groups)
 - SOUL.md + TOOLS.md with absolute rules (no credential disclosure, no self-modification)
 - Workspace files set to read-only (chmod 444)
+- Optional Docker sandbox for code execution isolation
 - Air-gap mode for complete network isolation: `clawspark airgap on`
+
+## Service Management
+
+All services auto-start on boot via systemd (Linux) or PID management (macOS).
+
+```bash
+clawspark start            # Start all services
+clawspark stop             # Stop all services (keeps Ollama running)
+clawspark stop --all       # Stop everything including Ollama
+clawspark restart          # Restart all services
+clawspark status           # Show health of all components
+```
 
 ## Remote Access
 
@@ -139,25 +217,26 @@ clawspark tailscale setup
 ## CLI
 
 ```bash
-clawspark status           # Show system health and running services
-clawspark start            # Start all services
-clawspark stop             # Stop all services
-clawspark restart          # Restart everything
-clawspark update           # Update OpenClaw, re-apply patches
-clawspark benchmark        # Run a performance benchmark
-clawspark model list       # Show available models
-clawspark model switch     # Change the active model
-clawspark skills list      # Show installed skills
-clawspark skills sync      # Apply skills.yaml changes
-clawspark tools list       # Show available agent tools
-clawspark tools enable     # Enable optional tools
-clawspark voice status     # Voice transcription status
-clawspark voice model      # Switch Whisper model size
-clawspark tailscale setup  # Configure remote access
-clawspark airgap on|off    # Toggle air-gap mode
-clawspark logs             # Tail all service logs
-clawspark doctor           # Diagnose common issues
-clawspark uninstall        # Remove everything
+clawspark status             # Show system health and running services
+clawspark start              # Start all services
+clawspark stop               # Stop all services
+clawspark restart            # Restart everything
+clawspark update             # Update OpenClaw, re-apply patches
+clawspark benchmark          # Run a performance benchmark
+clawspark model list         # Show available models
+clawspark model switch       # Change the active model
+clawspark model vision       # Set or show the vision model
+clawspark skills list        # Show installed skills
+clawspark skills sync        # Apply skills.yaml changes
+clawspark skills pack        # Install a curated skill bundle
+clawspark sandbox on|off     # Toggle Docker sandbox
+clawspark sandbox status     # Show sandbox configuration
+clawspark tools list         # Show available agent tools
+clawspark tools enable       # Enable optional tools
+clawspark tailscale setup    # Configure remote access
+clawspark airgap on|off      # Toggle air-gap mode
+clawspark logs               # Tail all service logs
+clawspark uninstall          # Remove everything
 ```
 
 ## Uninstall
@@ -183,10 +262,11 @@ clawspark builds on the work of several excellent open-source projects:
 ## Contributing
 
 PRs welcome. The main areas where help is needed:
-- Testing on different Jetson variants
+- Testing on different Jetson variants and RTX GPUs
 - Hardware detection for more GPU models
 - Additional messaging platform integrations
-- New skills
+- New skills and skill packs
+- Sandbox improvements
 
 ## License
 

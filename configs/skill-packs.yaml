@@ -1,0 +1,44 @@
+# skill-packs.yaml -- Curated skill bundles for common use cases.
+# Install a pack: clawspark skills pack <name>
+
+packs:
+  research:
+    description: "Deep research with multi-source analysis"
+    skills:
+      - deep-research-pro
+      - ddg-web-search
+      - local-web-search-skill
+      - second-brain
+
+  coding:
+    description: "Code generation, review, and testing"
+    skills:
+      - self-improvement
+      - agent-browser
+
+  productivity:
+    description: "Task management and knowledge organization"
+    skills:
+      - proactive-agent
+      - memory-setup
+      - second-brain
+
+  voice:
+    description: "Voice interaction and transcription"
+    skills:
+      - local-whisper
+      - whatsapp-voice-chat-integration-open-source
+
+  full:
+    description: "All verified skills (everything clawspark ships with)"
+    skills:
+      - local-whisper
+      - self-improvement
+      - memory-setup
+      - whatsapp-voice-chat-integration-open-source
+      - deep-research-pro
+      - agent-browser
+      - second-brain
+      - proactive-agent
+      - ddg-web-search
+      - local-web-search-skill

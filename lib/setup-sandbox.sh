@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# lib/setup-sandbox.sh -- Optional Docker-based sandbox for safe code execution.
+# Enables OpenClaw to run agent-generated code in an isolated container.
+# If Docker is not installed, the installer continues without sandbox support.
+set -euo pipefail
+
+setup_sandbox() {
+    # Only set up sandbox if Docker is available
+    if ! check_command docker; then
+        log_info "Docker not found -- sandbox will not be available."
+        log_info "Install Docker to enable sandboxed code execution."
+        return 0
+    fi
+
+    # Check if Docker daemon is running
+    if ! docker info &>/dev/null; then
+        log_warn "Docker is installed but not running -- sandbox skipped."
+        return 0
+    fi
+
+    log_info "Setting up Docker sandbox for safe code execution..."
+
+    # ── Create sandbox directory and Dockerfile ───────────────────────────────
+    local sandbox_dir="${CLAWSPARK_DIR}/sandbox"
+    mkdir -p "${sandbox_dir}"
+
+    cat > "${sandbox_dir}/Dockerfile" <<'DOCKERFILE'
+FROM ubuntu:22.04
+
+# Non-interactive apt
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install common dev tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv \
+    nodejs npm \
+    git curl wget jq \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -s /bin/bash sandbox
+USER sandbox
+WORKDIR /sandbox
+
+# Set up Python virtual env
+RUN python3 -m venv /sandbox/.venv
+ENV PATH="/sandbox/.venv/bin:$PATH"
+
+# Install common Python packages
+RUN pip install --no-cache-dir \
+    requests flask fastapi uvicorn \
+    pandas numpy matplotlib \
+    beautifulsoup4 lxml
+
+CMD ["/bin/bash"]
+DOCKERFILE
+
+    # ── Seccomp profile (block dangerous syscalls) ────────────────────────────
+    cat > "${sandbox_dir}/seccomp-profile.json" <<'SECCOMP'
+{
+    "defaultAction": "SCMP_ACT_ALLOW",
+    "syscalls": [
+        {
+            "names": [
+                "mount", "umount2", "pivot_root",
+                "swapon", "swapoff",
+                "reboot", "kexec_load", "kexec_file_load",
+                "init_module", "finit_module", "delete_module",
+                "acct", "settimeofday", "clock_settime",
+                "ptrace",
+                "add_key", "request_key", "keyctl",
+                "unshare", "setns"
+            ],
+            "action": "SCMP_ACT_ERRNO",
+            "errnoRet": 1
+        }
+    ]
+}
+SECCOMP
+
+    # ── Build the sandbox image ───────────────────────────────────────────────
+    log_info "Building sandbox image (this may take a minute)..."
+    (docker build -t clawspark-sandbox:latest "${sandbox_dir}") >> "${CLAWSPARK_LOG}" 2>&1 &
+    spinner $! "Building clawspark-sandbox image..."
+
+    if docker image inspect clawspark-sandbox:latest &>/dev/null; then
+        log_success "Sandbox image built: clawspark-sandbox:latest"
+    else
+        log_warn "Sandbox image build failed. Check ${CLAWSPARK_LOG}."
+        return 0
+    fi
+
+    # ── Configure OpenClaw to use the Docker sandbox ──────────────────────────
+    local config_file="${HOME}/.openclaw/openclaw.json"
+    if [[ -f "${config_file}" ]]; then
+        python3 -c "
+import json, sys
+
+path = sys.argv[1]
+seccomp = sys.argv[2]
+
+with open(path, 'r') as f:
+    cfg = json.load(f)
+
+# Enable sandbox for non-main sessions (sub-agents run sandboxed)
+cfg.setdefault('sandbox', {})
+cfg['sandbox']['mode'] = 'non-main'
+cfg['sandbox']['docker'] = {
+    'image': 'clawspark-sandbox:latest',
+    'seccompProfile': seccomp,
+    'networkMode': 'none',
+    'readOnlyRoot': True,
+    'tmpfs': {
+        '/tmp': 'size=100m',
+        '/sandbox/work': 'size=500m'
+    },
+    'capDrop': ['ALL'],
+    'memory': '1g',
+    'cpus': '2',
+    'pidsLimit': 200
+}
+
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('ok')
+" "${config_file}" "${sandbox_dir}/seccomp-profile.json" 2>> "${CLAWSPARK_LOG}" || {
+            log_warn "Could not configure sandbox in openclaw.json"
+        }
+        log_success "Sandbox configured: non-main sessions run in Docker."
+    fi
+
+    # ── Helper script for manual sandbox use ──────────────────────────────────
+    cat > "${sandbox_dir}/run.sh" <<'RUNSH'
+#!/usr/bin/env bash
+# run.sh -- Run a command inside the clawspark sandbox.
+# Usage: ~/.clawspark/sandbox/run.sh <command>
+# Example: ~/.clawspark/sandbox/run.sh python3 -c "print('hello')"
+set -euo pipefail
+
+SANDBOX_DIR="${HOME}/.clawspark/sandbox"
+
+if ! command -v docker &>/dev/null; then
+    echo "Error: Docker is not installed." >&2
+    exit 1
+fi
+
+if ! docker info &>/dev/null; then
+    echo "Error: Docker daemon is not running." >&2
+    exit 1
+fi
+
+if ! docker image inspect clawspark-sandbox:latest &>/dev/null; then
+    echo "Error: Sandbox image not found. Run install.sh or rebuild with:" >&2
+    echo "  docker build -t clawspark-sandbox:latest ${SANDBOX_DIR}" >&2
+    exit 1
+fi
+
+docker run --rm -it \
+    --read-only \
+    --tmpfs /tmp:size=100m \
+    --tmpfs /sandbox/work:size=500m \
+    --network=none \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --security-opt="seccomp=${SANDBOX_DIR}/seccomp-profile.json" \
+    --memory=1g \
+    --cpus=2 \
+    --pids-limit=200 \
+    -v "${PWD}:/sandbox/code:ro" \
+    clawspark-sandbox:latest \
+    "$@"
+RUNSH
+    chmod +x "${sandbox_dir}/run.sh"
+
+    log_success "Sandbox setup complete."
+    log_info "Sub-agent code execution will run in isolated Docker containers."
+    log_info "Manual use: ~/.clawspark/sandbox/run.sh <command>"
+}

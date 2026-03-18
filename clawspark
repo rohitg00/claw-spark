@@ -29,8 +29,19 @@ _load_common() {
 
 _load_common
 
+# ── Source sandbox commands ────────────────────────────────────────────────
+_load_sandbox_commands() {
+    local lib_dir="${CLAWSPARK_DIR}/lib"
+    if [[ -f "${lib_dir}/sandbox-commands.sh" ]]; then
+        # shellcheck source=/dev/null
+        source "${lib_dir}/sandbox-commands.sh"
+    fi
+}
+
+_load_sandbox_commands
+
 # ── Version ─────────────────────────────────────────────────────────────────
-CLAWSPARK_VERSION="1.0.0"
+CLAWSPARK_VERSION="2.0.0"
 
 # ── Usage ───────────────────────────────────────────────────────────────────
 _usage() {
@@ -45,6 +56,7 @@ ${BOLD}Commands:${RESET}
   ${GREEN}skills sync${RESET}         Re-read skills.yaml and install/remove skills
   ${GREEN}skills add <name>${RESET}   Add a skill and install it
   ${GREEN}skills remove <name>${RESET} Remove a skill
+  ${GREEN}skills pack [name]${RESET}  Install a curated skill pack (or list available packs)
   ${GREEN}benchmark${RESET}           Run a performance benchmark
   ${GREEN}update${RESET}              Update OpenClaw and re-sync skills
   ${GREEN}dashboard${RESET}           Show dashboard URLs and start ClawMetry if needed
@@ -52,11 +64,20 @@ ${BOLD}Commands:${RESET}
   ${GREEN}tailscale status${RESET}   Show Tailscale connection status and URLs
   ${GREEN}airgap on|off${RESET}       Toggle air-gap mode
   ${GREEN}logs${RESET}                Tail gateway logs
-  ${GREEN}restart${RESET}             Restart Ollama and the gateway
+  ${GREEN}start${RESET}               Start all services (Ollama, gateway, node host, dashboard)
+  ${GREEN}stop${RESET}                Stop services (add --all to also stop Ollama)
+  ${GREEN}restart${RESET}             Restart Ollama, gateway, node host, and dashboard
   ${GREEN}uninstall${RESET}           Remove everything (with confirmation)
+  ${GREEN}model list${RESET}           Show available and active models
+  ${GREEN}model switch <model>${RESET} Change the primary chat model
+  ${GREEN}model vision${RESET}         Set or show the vision model
   ${GREEN}tools${RESET}               List agent tools and their status
   ${GREEN}tools enable <name>${RESET}  Enable an additional tool (e.g. email, browser)
   ${GREEN}tools disable <name>${RESET} Disable a tool for the personal agent
+  ${GREEN}sandbox${RESET}             Show sandbox status
+  ${GREEN}sandbox on${RESET}          Enable Docker sandbox for code execution
+  ${GREEN}sandbox off${RESET}         Disable sandbox (run code on host)
+  ${GREEN}sandbox test${RESET}        Verify sandbox isolation with test suite
   ${GREEN}help${RESET}                Show this help message
 
 USAGE
@@ -97,7 +118,10 @@ _cmd_status() {
 
     # Gateway
     local gw_pid_file="${CLAWSPARK_DIR}/gateway.pid"
-    if [[ -f "${gw_pid_file}" ]]; then
+    if [[ -f /etc/systemd/system/clawspark-gateway.service ]] && \
+       systemctl is-active --quiet clawspark-gateway.service 2>/dev/null; then
+        printf '  %s✓%s Gateway           running (systemd)\n' "${GREEN}" "${RESET}"
+    elif [[ -f "${gw_pid_file}" ]]; then
         local gw_pid
         gw_pid=$(cat "${gw_pid_file}")
         if kill -0 "${gw_pid}" 2>/dev/null; then
@@ -111,7 +135,10 @@ _cmd_status() {
 
     # Node host
     local node_pid_file="${CLAWSPARK_DIR}/node.pid"
-    if [[ -f "${node_pid_file}" ]]; then
+    if [[ -f /etc/systemd/system/clawspark-nodehost.service ]] && \
+       systemctl is-active --quiet clawspark-nodehost.service 2>/dev/null; then
+        printf '  %s✓%s Node host         running (systemd)\n' "${GREEN}" "${RESET}"
+    elif [[ -f "${node_pid_file}" ]]; then
         local node_pid
         node_pid=$(cat "${node_pid_file}")
         if kill -0 "${node_pid}" 2>/dev/null; then
@@ -125,7 +152,10 @@ _cmd_status() {
 
     # Dashboard
     local dash_pid_file="${CLAWSPARK_DIR}/dashboard.pid"
-    if [[ -f "${dash_pid_file}" ]]; then
+    if [[ -f /etc/systemd/system/clawspark-dashboard.service ]] && \
+       systemctl is-active --quiet clawspark-dashboard.service 2>/dev/null; then
+        printf '  %s✓%s Dashboard         running (systemd)\n' "${GREEN}" "${RESET}"
+    elif [[ -f "${dash_pid_file}" ]]; then
         local dash_pid
         dash_pid=$(cat "${dash_pid_file}")
         if kill -0 "${dash_pid}" 2>/dev/null; then
@@ -153,6 +183,18 @@ _cmd_status() {
         [[ "${ag_state}" == "true" ]] && ag_state="ON" || ag_state="off"
     fi
     printf '  %s-%s Air-gap           %s\n' "${CYAN}" "${RESET}" "${ag_state}"
+
+    # Sandbox
+    local sb_state="off"
+    if [[ -f "${CLAWSPARK_DIR}/sandbox.state" ]]; then
+        sb_state=$(cat "${CLAWSPARK_DIR}/sandbox.state")
+        [[ "${sb_state}" == "true" ]] && sb_state="ON" || sb_state="off"
+    fi
+    if check_command docker && docker image inspect clawspark-sandbox:latest &>/dev/null 2>&1; then
+        printf '  %s✓%s Sandbox           %s (image ready)\n' "${GREEN}" "${RESET}" "${sb_state}"
+    else
+        printf '  %s-%s Sandbox           %s\n' "${CYAN}" "${RESET}" "${sb_state}"
+    fi
 
     # Token
     if [[ -f "${CLAWSPARK_DIR}/token" ]]; then
@@ -183,9 +225,14 @@ _cmd_skills() {
             [[ -z "${name}" ]] && { log_error "Usage: clawspark skills remove <name>"; exit 1; }
             _skills_remove "${name}"
             ;;
+        pack)
+            local pack_name="${1:-}"
+            [[ -z "${pack_name}" ]] && { _skills_list_packs; return 0; }
+            _skills_install_pack "${pack_name}"
+            ;;
         *)
             log_error "Unknown skills subcommand: ${subcmd}"
-            printf '  Usage: clawspark skills [sync|add <name>|remove <name>]\n'
+            printf '  Usage: clawspark skills [sync|add <name>|remove <name>|pack [name]]\n'
             exit 1
             ;;
     esac
@@ -291,6 +338,126 @@ _skills_remove() {
 
     log_success "Removed '${name}' from skills.yaml."
     log_info "Note: The skill package may still be cached locally."
+}
+
+_skills_list_packs() {
+    local packs_file="${CLAWSPARK_DIR}/configs/skill-packs.yaml"
+    if [[ ! -f "${packs_file}" ]]; then
+        packs_file="$(cd "$(dirname "$0")" && pwd)/configs/skill-packs.yaml"
+    fi
+    if [[ ! -f "${packs_file}" ]]; then
+        log_error "No skill-packs.yaml found."
+        exit 1
+    fi
+
+    printf '\n%s%sAvailable skill packs%s\n\n' "${BOLD}" "${BLUE}" "${RESET}"
+
+    local current_pack="" current_desc="" skill_count=0
+    while IFS= read -r line; do
+        [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+
+        # Detect pack name (indented exactly 2 spaces, ends with colon)
+        if [[ "${line}" =~ ^[[:space:]]{2}([a-zA-Z][a-zA-Z0-9_-]*):[[:space:]]*$ ]]; then
+            # Print previous pack if we had one
+            if [[ -n "${current_pack}" ]]; then
+                printf '  %-14s %s (%d skills)\n' "${current_pack}" "${current_desc}" "${skill_count}"
+            fi
+            current_pack="${BASH_REMATCH[1]}"
+            current_desc=""
+            skill_count=0
+            continue
+        fi
+
+        # Detect description line
+        if [[ "${line}" =~ ^[[:space:]]+description:[[:space:]]*\"?([^\"]*)\"? ]]; then
+            current_desc="${BASH_REMATCH[1]}"
+            continue
+        fi
+
+        # Count skill entries
+        if [[ "${line}" =~ ^[[:space:]]*-[[:space:]]+ ]] && [[ -n "${current_pack}" ]]; then
+            skill_count=$(( skill_count + 1 ))
+        fi
+    done < "${packs_file}"
+
+    # Print the last pack
+    if [[ -n "${current_pack}" ]]; then
+        printf '  %-14s %s (%d skills)\n' "${current_pack}" "${current_desc}" "${skill_count}"
+    fi
+
+    printf '\nInstall a pack: clawspark skills pack <name>\n\n'
+}
+
+_skills_install_pack() {
+    local pack_name="$1"
+    local packs_file="${CLAWSPARK_DIR}/configs/skill-packs.yaml"
+    if [[ ! -f "${packs_file}" ]]; then
+        packs_file="$(cd "$(dirname "$0")" && pwd)/configs/skill-packs.yaml"
+    fi
+    if [[ ! -f "${packs_file}" ]]; then
+        log_error "No skill-packs.yaml found."
+        exit 1
+    fi
+
+    # Parse skills for the requested pack
+    local -a skills=()
+    local in_pack=false in_skills=false
+
+    while IFS= read -r line; do
+        [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// }" ]] && continue
+
+        # Detect pack name line
+        if [[ "${line}" =~ ^[[:space:]]{2}([a-zA-Z][a-zA-Z0-9_-]*):[[:space:]]*$ ]]; then
+            if [[ "${BASH_REMATCH[1]}" == "${pack_name}" ]]; then
+                in_pack=true
+            elif ${in_pack}; then
+                break
+            fi
+            in_skills=false
+            continue
+        fi
+
+        if ${in_pack}; then
+            if [[ "${line}" =~ ^[[:space:]]+skills:[[:space:]]*$ ]]; then
+                in_skills=true
+                continue
+            fi
+            # Another key under this pack (not skills list) -- stop reading skills
+            if [[ "${line}" =~ ^[[:space:]]{4}[a-zA-Z] ]] && [[ ! "${line}" =~ ^[[:space:]]*- ]]; then
+                in_skills=false
+                continue
+            fi
+            if ${in_skills} && [[ "${line}" =~ ^[[:space:]]*-[[:space:]]+(.*) ]]; then
+                local slug="${BASH_REMATCH[1]}"
+                slug="${slug## }"; slug="${slug%% }"
+                skills+=("${slug}")
+            fi
+        fi
+    done < "${packs_file}"
+
+    if [[ ${#skills[@]} -eq 0 ]]; then
+        log_error "Pack '${pack_name}' not found. Run 'clawspark skills pack' to see available packs."
+        exit 1
+    fi
+
+    printf '\n%s%sInstalling skill pack: %s%s (%d skills)\n\n' "${BOLD}" "${BLUE}" "${pack_name}" "${RESET}" "${#skills[@]}"
+
+    local installed=0 failed=0
+    for skill in "${skills[@]}"; do
+        printf '  %s->%s %s ... ' "${CYAN}" "${RESET}" "${skill}"
+        if npx --yes clawhub@latest install --force "${skill}" >> "${CLAWSPARK_LOG}" 2>&1; then
+            printf '%sdone%s\n' "${GREEN}" "${RESET}"
+            installed=$(( installed + 1 ))
+        else
+            printf '%sfailed%s\n' "${YELLOW}" "${RESET}"
+            failed=$(( failed + 1 ))
+        fi
+    done
+
+    printf '\n'
+    log_success "Pack '${pack_name}' complete: ${installed} installed, ${failed} failed."
 }
 
 # ── benchmark ───────────────────────────────────────────────────────────────
@@ -607,6 +774,11 @@ _cmd_logs() {
 _cmd_restart() {
     log_info "Restarting services..."
 
+    local use_systemd=false
+    if [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
+        use_systemd=true
+    fi
+
     # Restart Ollama
     if check_command systemctl && systemctl is-enabled ollama &>/dev/null; then
         sudo systemctl restart ollama
@@ -634,26 +806,20 @@ _cmd_restart() {
         sleep 1
     done
 
+    # Source gateway env for PID-based services
+    local env_file="${HOME}/.openclaw/gateway.env"
+
     # Restart gateway
-    local service_file="${HOME}/.config/systemd/user/openclaw-gateway.service"
-    if check_command systemctl && [[ -f "${service_file}" ]]; then
-        # Ensure Ollama env vars are in the systemd service file
-        if ! grep -q 'OLLAMA_API_KEY' "${service_file}" 2>/dev/null; then
-            sed -i '/^Environment=HOME/a Environment=OLLAMA_API_KEY=ollama\nEnvironment=OLLAMA_BASE_URL=http://127.0.0.1:11434' "${service_file}"
-            systemctl --user daemon-reload
-            log_info "Injected Ollama env vars into systemd service."
-        fi
-        systemctl --user restart openclaw-gateway.service
+    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
+        sudo systemctl restart clawspark-gateway.service
         log_success "Gateway restarted via systemd."
     elif check_command openclaw; then
-        # PID-based fallback
         if [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]]; then
             local gw_pid
             gw_pid=$(cat "${CLAWSPARK_DIR}/gateway.pid")
             kill "${gw_pid}" 2>/dev/null || true
             sleep 1
         fi
-        local env_file="${HOME}/.openclaw/gateway.env"
         [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
         nohup openclaw gateway run --bind loopback > "${CLAWSPARK_DIR}/gateway.log" 2>&1 &
         echo $! > "${CLAWSPARK_DIR}/gateway.pid"
@@ -662,19 +828,446 @@ _cmd_restart() {
         log_warn "openclaw not found, gateway not started."
     fi
 
-    # Restart node host (provides filesystem/read tools)
-    if check_command openclaw; then
-        sleep 2
+    sleep 3
+
+    # Restart node host
+    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-nodehost.service ]]; then
+        sudo systemctl restart clawspark-nodehost.service
+        log_success "Node host restarted via systemd."
+    elif check_command openclaw; then
         if [[ -f "${CLAWSPARK_DIR}/node.pid" ]]; then
             kill "$(cat "${CLAWSPARK_DIR}/node.pid")" 2>/dev/null || true
             sleep 1
         fi
-        local env_file="${HOME}/.openclaw/gateway.env"
         [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
         nohup openclaw node run --host 127.0.0.1 --port 18789 > "${CLAWSPARK_DIR}/node.log" 2>&1 &
         echo $! > "${CLAWSPARK_DIR}/node.pid"
         log_success "Node host restarted (PID $!)."
     fi
+
+    # Restart dashboard
+    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-dashboard.service ]]; then
+        sudo systemctl restart clawspark-dashboard.service
+        log_success "Dashboard restarted via systemd."
+    else
+        if [[ -f "${CLAWSPARK_DIR}/dashboard.pid" ]]; then
+            kill "$(cat "${CLAWSPARK_DIR}/dashboard.pid")" 2>/dev/null || true
+            sleep 1
+        fi
+        _start_dashboard
+    fi
+}
+
+# ── start ──────────────────────────────────────────────────────────────────
+_cmd_start() {
+    log_info "Starting services..."
+
+    local use_systemd=false
+    if [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
+        use_systemd=true
+    fi
+
+    # Start Ollama
+    if check_command systemctl && systemctl is-enabled ollama &>/dev/null; then
+        sudo systemctl start ollama
+        log_success "Ollama started via systemctl."
+    else
+        if [[ -f "${CLAWSPARK_DIR}/ollama.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/ollama.pid")" 2>/dev/null; then
+            log_info "Ollama already running."
+        else
+            nohup ollama serve >> "${CLAWSPARK_DIR}/ollama.log" 2>&1 &
+            echo $! > "${CLAWSPARK_DIR}/ollama.pid"
+            log_success "Ollama started (PID $!)."
+        fi
+    fi
+
+    # Wait for Ollama API
+    local attempts=0
+    while (( attempts < 15 )); do
+        if curl -sf http://127.0.0.1:11434/ &>/dev/null; then break; fi
+        attempts=$(( attempts + 1 ))
+        sleep 1
+    done
+
+    # Source gateway env for PID-based services
+    local env_file="${HOME}/.openclaw/gateway.env"
+
+    # Start gateway
+    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
+        sudo systemctl start clawspark-gateway.service
+        log_success "Gateway started via systemd."
+    elif check_command openclaw; then
+        if [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/gateway.pid")" 2>/dev/null; then
+            log_info "Gateway already running."
+        else
+            [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+            nohup openclaw gateway run --bind loopback > "${CLAWSPARK_DIR}/gateway.log" 2>&1 &
+            echo $! > "${CLAWSPARK_DIR}/gateway.pid"
+            log_success "Gateway started (PID $!)."
+        fi
+    else
+        log_warn "openclaw not found, gateway not started."
+    fi
+
+    sleep 3
+
+    # Start node host
+    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-nodehost.service ]]; then
+        sudo systemctl start clawspark-nodehost.service
+        log_success "Node host started via systemd."
+    elif check_command openclaw; then
+        if [[ -f "${CLAWSPARK_DIR}/node.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/node.pid")" 2>/dev/null; then
+            log_info "Node host already running."
+        else
+            [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+            nohup openclaw node run --host 127.0.0.1 --port 18789 > "${CLAWSPARK_DIR}/node.log" 2>&1 &
+            echo $! > "${CLAWSPARK_DIR}/node.pid"
+            log_success "Node host started (PID $!)."
+        fi
+    fi
+
+    # Start dashboard
+    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-dashboard.service ]]; then
+        sudo systemctl start clawspark-dashboard.service
+        log_success "Dashboard started via systemd."
+    else
+        if [[ -f "${CLAWSPARK_DIR}/dashboard.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/dashboard.pid")" 2>/dev/null; then
+            log_info "Dashboard already running."
+        elif curl -sf --max-time 2 http://127.0.0.1:8900 &>/dev/null; then
+            log_info "Dashboard already running."
+        else
+            _start_dashboard
+        fi
+    fi
+}
+
+# ── stop ───────────────────────────────────────────────────────────────────
+_cmd_stop() {
+    local stop_all=false
+    for arg in "$@"; do
+        [[ "${arg}" == "--all" ]] && stop_all=true
+    done
+
+    log_info "Stopping services..."
+
+    local use_systemd=false
+    if [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
+        use_systemd=true
+    fi
+
+    # Stop dashboard
+    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-dashboard.service ]]; then
+        sudo systemctl stop clawspark-dashboard.service
+        log_success "Dashboard stopped via systemd."
+    elif [[ -f "${CLAWSPARK_DIR}/dashboard.pid" ]]; then
+        local dash_pid
+        dash_pid=$(cat "${CLAWSPARK_DIR}/dashboard.pid")
+        kill "${dash_pid}" 2>/dev/null || true
+        rm -f "${CLAWSPARK_DIR}/dashboard.pid"
+        log_success "Dashboard stopped (was PID ${dash_pid})."
+    else
+        log_info "Dashboard is not running."
+    fi
+
+    # Stop node host
+    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-nodehost.service ]]; then
+        sudo systemctl stop clawspark-nodehost.service
+        log_success "Node host stopped via systemd."
+    elif [[ -f "${CLAWSPARK_DIR}/node.pid" ]]; then
+        local node_pid
+        node_pid=$(cat "${CLAWSPARK_DIR}/node.pid")
+        kill "${node_pid}" 2>/dev/null || true
+        rm -f "${CLAWSPARK_DIR}/node.pid"
+        log_success "Node host stopped (was PID ${node_pid})."
+    else
+        log_info "Node host is not running."
+    fi
+
+    # Stop gateway
+    if ${use_systemd} && [[ -f /etc/systemd/system/clawspark-gateway.service ]]; then
+        sudo systemctl stop clawspark-gateway.service
+        log_success "Gateway stopped via systemd."
+    elif [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]]; then
+        local gw_pid
+        gw_pid=$(cat "${CLAWSPARK_DIR}/gateway.pid")
+        kill "${gw_pid}" 2>/dev/null || true
+        rm -f "${CLAWSPARK_DIR}/gateway.pid"
+        log_success "Gateway stopped (was PID ${gw_pid})."
+    else
+        log_info "Gateway is not running."
+    fi
+
+    # Stop Ollama only with --all flag
+    if ${stop_all}; then
+        if check_command systemctl && systemctl is-enabled ollama &>/dev/null; then
+            sudo systemctl stop ollama
+            log_success "Ollama stopped via systemctl."
+        elif [[ -f "${CLAWSPARK_DIR}/ollama.pid" ]]; then
+            local ollama_pid
+            ollama_pid=$(cat "${CLAWSPARK_DIR}/ollama.pid")
+            kill "${ollama_pid}" 2>/dev/null || true
+            rm -f "${CLAWSPARK_DIR}/ollama.pid"
+            log_success "Ollama stopped (was PID ${ollama_pid})."
+        else
+            log_info "Ollama is not running."
+        fi
+    else
+        log_info "Ollama left running (shared service). Use --all to also stop Ollama."
+    fi
+}
+
+# ── _start_dashboard (helper) ─────────────────────────────────────────────
+_start_dashboard() {
+    # Method 1: clawmetry CLI in PATH
+    if check_command clawmetry; then
+        nohup clawmetry --port 8900 --host 127.0.0.1 >> "${CLAWSPARK_DIR}/dashboard.log" 2>&1 &
+        echo $! > "${CLAWSPARK_DIR}/dashboard.pid"
+        log_success "Dashboard started via clawmetry (PID $!)."
+        return
+    fi
+
+    # Method 2: clawmetry in ~/.local/bin
+    if [[ -x "${HOME}/.local/bin/clawmetry" ]]; then
+        nohup "${HOME}/.local/bin/clawmetry" --port 8900 --host 127.0.0.1 >> "${CLAWSPARK_DIR}/dashboard.log" 2>&1 &
+        echo $! > "${CLAWSPARK_DIR}/dashboard.pid"
+        log_success "Dashboard started via ~/.local/bin/clawmetry (PID $!)."
+        return
+    fi
+
+    # Method 3: waitress + clawmetry Python module
+    if python3 -c "from clawmetry import create_app; from waitress import serve" 2>/dev/null; then
+        nohup python3 -c "from clawmetry import create_app; from waitress import serve; serve(create_app(), host='127.0.0.1', port=8900)" >> "${CLAWSPARK_DIR}/dashboard.log" 2>&1 &
+        echo $! > "${CLAWSPARK_DIR}/dashboard.pid"
+        log_success "Dashboard started via waitress (PID $!)."
+        return
+    fi
+
+    # Method 4: Flask dev server
+    if python3 -c "from clawmetry import create_app" 2>/dev/null; then
+        nohup python3 -c "from clawmetry import create_app; app = create_app(); app.run(host='127.0.0.1', port=8900)" >> "${CLAWSPARK_DIR}/dashboard.log" 2>&1 &
+        echo $! > "${CLAWSPARK_DIR}/dashboard.pid"
+        log_success "Dashboard started via Flask dev server (PID $!)."
+        return
+    fi
+
+    log_warn "ClawMetry is not installed. Dashboard not started."
+}
+
+# ── model ──────────────────────────────────────────────────────────────────
+_cmd_model() {
+    local subcmd="${1:-list}"
+    shift || true
+
+    case "${subcmd}" in
+        list)
+            _model_list
+            ;;
+        switch)
+            local name="${1:-}"
+            [[ -z "${name}" ]] && { log_error "Usage: clawspark model switch <model>"; exit 1; }
+            _model_switch "${name}"
+            ;;
+        vision)
+            local name="${1:-}"
+            if [[ -z "${name}" ]]; then
+                _model_vision_show
+            else
+                _model_vision_set "${name}"
+            fi
+            ;;
+        *)
+            log_error "Unknown model subcommand: ${subcmd}"
+            printf '  Usage: clawspark model [list|switch <model>|vision [model]]\n'
+            exit 1
+            ;;
+    esac
+}
+
+_model_list() {
+    printf '\n%s%s clawspark models%s\n\n' "${BOLD}" "${BLUE}" "${RESET}"
+
+    local config_file="${HOME}/.openclaw/openclaw.json"
+    local primary_model="" vision_model="" imagegen_model=""
+
+    if [[ -f "${config_file}" ]]; then
+        primary_model=$(python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    cfg = json.load(f)
+print(cfg.get('agents', {}).get('defaults', {}).get('model', ''))
+" "${config_file}" 2>/dev/null || echo "")
+
+        vision_model=$(python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    cfg = json.load(f)
+print(cfg.get('agents', {}).get('defaults', {}).get('imageModel', ''))
+" "${config_file}" 2>/dev/null || echo "")
+
+        imagegen_model=$(python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    cfg = json.load(f)
+print(cfg.get('agents', {}).get('defaults', {}).get('imageGenerationModel', ''))
+" "${config_file}" 2>/dev/null || echo "")
+    fi
+
+    printf '  %s%sActive Models:%s\n\n' "${BOLD}" "${GREEN}" "${RESET}"
+    if [[ -n "${primary_model}" ]]; then
+        printf '    %s✓%s Primary (chat)     : %s%s%s\n' "${GREEN}" "${RESET}" "${CYAN}" "${primary_model}" "${RESET}"
+    else
+        printf '    %s-%s Primary (chat)     : %snot set%s\n' "${YELLOW}" "${RESET}" "${YELLOW}" "${RESET}"
+    fi
+    if [[ -n "${vision_model}" ]]; then
+        printf '    %s✓%s Vision (images)    : %s%s%s\n' "${GREEN}" "${RESET}" "${CYAN}" "${vision_model}" "${RESET}"
+    else
+        printf '    %s-%s Vision (images)    : %snot configured%s\n' "${YELLOW}" "${RESET}" "${YELLOW}" "${RESET}"
+    fi
+    if [[ -n "${imagegen_model}" ]]; then
+        printf '    %s✓%s Image generation   : %s%s%s\n' "${GREEN}" "${RESET}" "${CYAN}" "${imagegen_model}" "${RESET}"
+    else
+        printf '    %s-%s Image generation   : %snot configured%s\n' "${YELLOW}" "${RESET}" "${YELLOW}" "${RESET}"
+    fi
+
+    # Show all pulled Ollama models
+    printf '\n  %s%sOllama Models (pulled):%s\n\n' "${BOLD}" "${GREEN}" "${RESET}"
+    if check_command ollama; then
+        local model_output
+        model_output=$(ollama list 2>/dev/null || echo "")
+        if [[ -n "${model_output}" ]]; then
+            echo "${model_output}" | tail -n +2 | while IFS= read -r line; do
+                local mname
+                mname=$(echo "${line}" | awk '{print $1}')
+                local msize
+                msize=$(echo "${line}" | awk '{print $3, $4}')
+                local marker=""
+                if [[ "ollama/${mname}" == "${primary_model}" ]]; then
+                    marker=" ${GREEN}(primary)${RESET}"
+                elif [[ "ollama/${mname}" == "${vision_model}" ]]; then
+                    marker=" ${CYAN}(vision)${RESET}"
+                fi
+                printf '    %-35s %s%s\n' "${mname}" "${msize}" "${marker}"
+            done
+        else
+            printf '    %s(no models pulled)%s\n' "${YELLOW}" "${RESET}"
+        fi
+    else
+        printf '    %s(ollama not found)%s\n' "${RED}" "${RESET}"
+    fi
+
+    printf '\n  Switch model:  clawspark model switch <model>\n'
+    printf '  Set vision:    clawspark model vision <model>\n'
+    printf '  Pull a model:  ollama pull <model>\n\n'
+}
+
+_model_switch() {
+    local model="$1"
+    local config_file="${HOME}/.openclaw/openclaw.json"
+
+    if [[ ! -f "${config_file}" ]]; then
+        log_error "Config not found at ${config_file}. Run install.sh first."
+        exit 1
+    fi
+
+    # Check if the model is pulled in Ollama
+    if check_command ollama; then
+        if ! ollama list 2>/dev/null | grep -qi "^${model}"; then
+            log_warn "Model '${model}' does not appear in ollama list."
+            log_warn "Pull it first: ollama pull ${model}"
+            log_warn "Setting config anyway in case the model name is correct."
+        fi
+    fi
+
+    # Update the config
+    local model_id="ollama/${model}"
+    python3 -c "
+import json, sys
+
+path = sys.argv[1]
+model = sys.argv[2]
+
+with open(path, 'r') as f:
+    cfg = json.load(f)
+
+cfg.setdefault('agents', {}).setdefault('defaults', {})
+cfg['agents']['defaults']['model'] = model
+
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('ok')
+" "${config_file}" "${model_id}" 2>> "${CLAWSPARK_LOG}" || {
+        log_error "Failed to update config."
+        exit 1
+    }
+
+    log_success "Primary model set to: ${model_id}"
+    log_info "Restarting gateway to apply..."
+    _cmd_restart
+}
+
+_model_vision_show() {
+    local config_file="${HOME}/.openclaw/openclaw.json"
+    local vision_model=""
+
+    if [[ -f "${config_file}" ]]; then
+        vision_model=$(python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    cfg = json.load(f)
+print(cfg.get('agents', {}).get('defaults', {}).get('imageModel', ''))
+" "${config_file}" 2>/dev/null || echo "")
+    fi
+
+    if [[ -n "${vision_model}" ]]; then
+        printf '  Vision model: %s%s%s\n' "${CYAN}" "${vision_model}" "${RESET}"
+    else
+        printf '  Vision model: %snot configured%s\n' "${YELLOW}" "${RESET}"
+        printf '  Set one with: clawspark model vision <model>\n'
+        printf '  Example: clawspark model vision qwen2.5-vl:7b\n'
+    fi
+}
+
+_model_vision_set() {
+    local model="$1"
+    local config_file="${HOME}/.openclaw/openclaw.json"
+
+    if [[ ! -f "${config_file}" ]]; then
+        log_error "Config not found at ${config_file}. Run install.sh first."
+        exit 1
+    fi
+
+    # Check if the model is pulled
+    if check_command ollama; then
+        if ! ollama list 2>/dev/null | grep -qi "^${model}"; then
+            log_warn "Model '${model}' does not appear in ollama list."
+            log_warn "Pull it first: ollama pull ${model}"
+            log_warn "Setting config anyway in case the model name is correct."
+        fi
+    fi
+
+    local model_id="ollama/${model}"
+    python3 -c "
+import json, sys
+
+path = sys.argv[1]
+model = sys.argv[2]
+
+with open(path, 'r') as f:
+    cfg = json.load(f)
+
+cfg.setdefault('agents', {}).setdefault('defaults', {})
+cfg['agents']['defaults']['imageModel'] = model
+
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('ok')
+" "${config_file}" "${model_id}" 2>> "${CLAWSPARK_LOG}" || {
+        log_error "Failed to update config."
+        exit 1
+    }
+
+    log_success "Vision model set to: ${model_id}"
+    log_info "Restart to apply: clawspark restart"
 }
 
 # ── tools ───────────────────────────────────────────────────────────────────
@@ -1001,12 +1594,16 @@ case "${cmd}" in
     status)     _cmd_status ;;
     skills)     _cmd_skills "$@" ;;
     tools)      _cmd_tools "$@" ;;
+    model)      _cmd_model "$@" ;;
     benchmark)  _cmd_benchmark ;;
     update)     _cmd_update ;;
     dashboard)  _cmd_dashboard ;;
     tailscale)  _cmd_tailscale "$@" ;;
     airgap)     _cmd_airgap "$@" ;;
+    sandbox)    _cmd_sandbox "$@" ;;
     logs)       _cmd_logs ;;
+    start)      _cmd_start ;;
+    stop)       _cmd_stop "$@" ;;
     restart)    _cmd_restart ;;
     uninstall)  _cmd_uninstall ;;
     help|-h|--help) _usage ;;

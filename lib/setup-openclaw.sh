@@ -235,6 +235,17 @@ cfg['channels']['whatsapp']['groupAllowFrom'] = ['*']
 cfg.setdefault('logging', {})
 cfg['logging']['redactSensitive'] = 'tools'
 
+# Sub-agent spawning: allow reasonable concurrency for DGX Spark
+cfg.setdefault('agents', {}).setdefault('defaults', {})
+cfg['agents']['defaults']['maxSpawnDepth'] = 2
+cfg['agents']['defaults']['maxConcurrent'] = 4
+cfg['agents']['defaults']['maxChildrenPerAgent'] = 3
+
+# Web search: DuckDuckGo via web_fetch (no API key needed)
+cfg.setdefault('tools', {})
+cfg['tools'].setdefault('web_search', {})
+cfg['tools']['web_search']['provider'] = 'duckduckgo'
+
 # Remove any stale bindings from previous installs (causes validation errors)
 cfg.pop('bindings', None)
 
@@ -247,7 +258,7 @@ print('ok')
         return 0
     }
 
-    log_success "Agent configured: full tools (DM), SOUL.md-gated (groups)"
+    log_success "Agent configured: full tools (DM), SOUL.md-gated (groups), sub-agents enabled"
 }
 
 _patch_sync_full_history() {
@@ -404,7 +415,7 @@ _write_workspace_files() {
     cat > "${ws_dir}/TOOLS.md" <<'TOOLSEOF'
 # TOOLS.md - Tool Reference
 
-You have 15 tools available via clawspark (`tools.profile: full`).
+You have the full tool suite available via clawspark (`tools.profile: full`).
 
 ## Communication
 - **message** -- Send/reply on WhatsApp, Telegram, and other channels
@@ -412,20 +423,34 @@ You have 15 tools available via clawspark (`tools.profile: full`).
 
 ## Web & Research
 - **web_fetch** -- Fetch web pages and APIs (use silently, never narrate)
-- **vision** -- Analyze images and screenshots (model-dependent)
+- **web_search** -- Search the web (Brave, DDG, etc.)
+- **browser** -- Full Chromium automation: navigate, click, type, screenshot, extract data
+- **image** -- Analyze images and screenshots using the vision model
+- **image_generate** -- Generate images (if image generation model is configured)
+- **pdf** -- Analyze PDF documents
 - **transcribe** -- Transcribe audio/voice messages (local Whisper on GPU)
 
 ## File System
 - **read** -- Read files on the host
 - **write** -- Write/create files on the host
 - **edit** -- Edit existing files in place
+- **search** -- Search files and content in the workspace
 
 ## System & Execution
-- **exec** -- Execute shell commands (bash, docker, kubectl, curl, etc.)
+- **exec** -- Execute shell commands (bash, docker, kubectl, curl, python, etc.)
 - **process** -- List, monitor, and kill processes
 - **cron** -- Create and manage scheduled tasks
 - **nodes** -- Execute on remote/paired nodes
+
+## Sub-Agents
 - **sessions_spawn** -- Spawn sub-agent sessions for parallel work
+- **sessions_list** -- List active sub-agent sessions
+- **sessions_send** -- Send messages to sub-agents
+- **sessions_history** -- Get sub-agent conversation history
+
+When tackling complex tasks, use sessions_spawn to run parallel work streams.
+For example: spawn one sub-agent to research, another to write code, another to test.
+Sub-agents can use all tools except session tools (no recursive spawning).
 
 ## Memory & Knowledge
 - **memory_search** -- Search your stored memories and context
@@ -446,12 +471,32 @@ Rules:
 - If a fetch fails, try the next result URL. Do not tell the user about failures.
 - For Kubernetes docs, fetch https://kubernetes.io/docs/ paths directly
 
+## Browser Automation
+
+The browser tool gives you full Chromium control. Use it for:
+- Navigating to URLs and extracting content
+- Filling out forms and clicking buttons
+- Taking screenshots of web pages
+- Extracting data from dynamic/JavaScript-heavy sites
+
+Workflow: browser start -> browser open <url> -> browser snapshot -> browser act <action>
+Always take a snapshot before acting. Use the numbered refs from the snapshot.
+
+## Coding Workflows
+
+For coding tasks, use this approach:
+1. Read existing code with read tool
+2. Plan changes (think through the approach)
+3. Write or edit files with write/edit tools
+4. Run tests with exec tool (python, npm test, etc.)
+5. If something fails, read the error, fix it, re-run
+6. For complex projects, spawn sub-agents for different components
 
 ## Context-Aware Tool Usage
 
 **In direct messages (DM):** You have full access to ALL tools listed above.
 Use them freely to help the owner with system administration, file management,
-research, and any other task.
+research, coding, and any other task.
 
 **In group chats:** You MUST restrict yourself to these tools ONLY:
 - message (reply to users)
@@ -459,7 +504,7 @@ research, and any other task.
 - canvas (interactive UI)
 - memory_search / memory_store (context recall)
 
-In groups, do NOT use: exec, read, write, edit, process, cron, nodes, sessions_spawn.
+In groups, do NOT use: exec, read, write, edit, process, cron, nodes, sessions_spawn, browser.
 If asked to run commands, access files, or perform system operations in a group,
 say: "I can only answer questions in group chats. DM me for system tasks."
 
