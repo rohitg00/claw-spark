@@ -101,6 +101,7 @@ _source_lib() {
         setup-tailscale.sh \
         setup-dashboard.sh \
         setup-models.sh \
+        setup-mcp.sh \
         setup-browser.sh \
         setup-sandbox.sh \
         setup-systemd.sh \
@@ -178,7 +179,7 @@ CLAW
 }
 
 # ── Step 1: Banner ─────────────────────────────────────────────────────────
-log_info "Step 1/18: Welcome"
+log_info "Step 1/19: Welcome"
 _show_banner
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -186,15 +187,15 @@ _show_banner
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── Step 2: Hardware detection ──────────────────────────────────────────────
-log_info "Step 2/18: Detecting hardware"
+log_info "Step 2/19: Detecting hardware"
 detect_hardware
 
 # ── Step 3: Model selection ─────────────────────────────────────────────────
-log_info "Step 3/18: Selecting model"
+log_info "Step 3/19: Selecting model"
 select_model
 
 # ── Step 4: Deployment mode ─────────────────────────────────────────────────
-log_info "Step 4/18: Deployment mode"
+log_info "Step 4/19: Deployment mode"
 if [[ -z "${DEPLOY_MODE}" ]]; then
     if prompt_yn "Use cloud APIs as fallback? (requires API key)" "n"; then
         DEPLOY_MODE="hybrid"
@@ -206,11 +207,13 @@ export DEPLOY_MODE
 log_info "Deploy mode: ${DEPLOY_MODE}"
 
 # ── Step 5: Messaging preference ───────────────────────────────────────────
-log_info "Step 5/18: Messaging preference"
+log_info "Step 5/19: Messaging preference"
 if [[ -z "${FLAG_MESSAGING}" ]]; then
     msg_opts=("WhatsApp" "Telegram" "Both" "Skip")
     FLAG_MESSAGING=$(prompt_choice "Connect a messaging platform? (Web UI is always available)" msg_opts 3)
 fi
+# Lowercase for consistent matching downstream
+FLAG_MESSAGING="${FLAG_MESSAGING,,}"
 export FLAG_MESSAGING
 log_info "Messaging: ${FLAG_MESSAGING}"
 
@@ -218,11 +221,11 @@ hr
 printf '\n  %s%sBeginning installation...%s\n\n' "${BOLD}" "${GREEN}" "${RESET}"
 
 # ── Step 6: Inference engine ────────────────────────────────────────────────
-log_info "Step 6/18: Setting up inference engine"
+log_info "Step 6/19: Setting up inference engine"
 setup_inference
 
 # ── Step 7: OpenClaw ────────────────────────────────────────────────────────
-log_info "Step 7/18: Installing OpenClaw"
+log_info "Step 7/19: Installing OpenClaw"
 setup_openclaw
 
 # ── Install the clawspark CLI early so it is available for troubleshooting ──
@@ -240,43 +243,47 @@ if [[ -d "${SCRIPT_DIR}/configs" ]]; then
 fi
 
 # ── Step 8: Skills ──────────────────────────────────────────────────────────
-log_info "Step 8/18: Installing skills"
+log_info "Step 8/19: Installing skills"
 setup_skills
 
 # ── Step 9: Voice ──────────────────────────────────────────────────────────
-log_info "Step 9/18: Setting up voice"
+log_info "Step 9/19: Setting up voice"
 setup_voice
 
 # ── Step 10: Messaging ─────────────────────────────────────────────────────
-log_info "Step 10/18: Setting up messaging"
+log_info "Step 10/19: Setting up messaging"
 setup_messaging
 
 # ── Step 11: Tailscale ─────────────────────────────────────────────────────
-log_info "Step 11/18: Setting up Tailscale"
+log_info "Step 11/19: Setting up Tailscale"
 setup_tailscale
 
 # ── Step 12: Dashboard ─────────────────────────────────────────────────────
-log_info "Step 12/18: Setting up dashboard"
+log_info "Step 12/19: Setting up dashboard"
 setup_dashboard || log_warn "Dashboard setup had issues -- continuing with install."
 
 # ── Step 13: Vision & multi-model ──────────────────────────────────────────
-log_info "Step 13/18: Configuring vision and multi-model support"
+log_info "Step 13/19: Configuring vision and multi-model support"
 setup_models || log_warn "Model configuration had issues -- continuing."
 
-# ── Step 14: Browser automation ────────────────────────────────────────────
-log_info "Step 14/18: Setting up browser automation"
+# ── Step 14: MCP servers (diagrams, memory, reasoning) ───────────────────
+log_info "Step 14/19: Setting up MCP servers"
+setup_mcp || log_warn "MCP setup had issues -- continuing."
+
+# ── Step 15: Browser automation ────────────────────────────────────────────
+log_info "Step 15/19: Setting up browser automation"
 setup_browser || log_warn "Browser setup had issues -- continuing."
 
-# ── Step 15: Docker sandbox ────────────────────────────────────────────────
-log_info "Step 15/18: Setting up Docker sandbox"
+# ── Step 16: Docker sandbox ────────────────────────────────────────────────
+log_info "Step 16/19: Setting up Docker sandbox"
 setup_sandbox || log_warn "Sandbox setup had issues -- continuing."
 
-# ── Step 16: Systemd services ──────────────────────────────────────────────
-log_info "Step 16/18: Creating systemd services for auto-start on boot"
+# ── Step 17: Systemd services ──────────────────────────────────────────────
+log_info "Step 17/19: Creating systemd services for auto-start on boot"
 setup_systemd_services || log_warn "Systemd setup had issues -- services will use PID management."
 
-# ── Step 17: Security ──────────────────────────────────────────────────────
-log_info "Step 17/18: Applying security"
+# ── Step 18: Security ──────────────────────────────────────────────────────
+log_info "Step 18/19: Applying security"
 secure_setup
 
 # ── Start node host (after all config changes are done) ───────────────────
@@ -289,7 +296,7 @@ else
 fi
 
 # ── Step 18: Verification ──────────────────────────────────────────────────
-log_info "Step 18/18: Verifying installation"
+log_info "Step 19/19: Verifying installation"
 verify_installation
 
 # ── Final CLI refresh (picks up any changes made during install) ──────────

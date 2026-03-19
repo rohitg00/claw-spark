@@ -91,7 +91,7 @@ _setup_whatsapp() {
 
     # Source Ollama env so the gateway can start if needed
     local env_file="${HOME}/.openclaw/gateway.env"
-    [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+    if [[ -f "${env_file}" ]]; then set +e; set -a; source "${env_file}" 2>/dev/null; set +a; set -e; fi
 
     # Use the channels login command for WhatsApp
     openclaw channels login --channel whatsapp --verbose 2>&1 | tee -a "${CLAWSPARK_LOG}" || {
@@ -124,7 +124,7 @@ _setup_telegram() {
 
     # Source Ollama env
     local env_file="${HOME}/.openclaw/gateway.env"
-    [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+    if [[ -f "${env_file}" ]]; then set +e; set -a; source "${env_file}" 2>/dev/null; set +a; set -e; fi
 
     openclaw configure --section channels 2>&1 | tee -a "${CLAWSPARK_LOG}" || {
         log_warn "Channel setup exited with an error. You can configure Telegram manually later."
@@ -153,7 +153,7 @@ _start_gateway() {
 
     # Source Ollama provider credentials
     local env_file="${HOME}/.openclaw/gateway.env"
-    [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+    if [[ -f "${env_file}" ]]; then set +e; set -a; source "${env_file}" 2>/dev/null; set +a; set -e; fi
 
     nohup openclaw gateway run --bind loopback > "${gateway_log}" 2>&1 &
     local gw_pid=$!
@@ -191,7 +191,7 @@ _start_node_host() {
     fi
 
     local env_file="${HOME}/.openclaw/gateway.env"
-    [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+    if [[ -f "${env_file}" ]]; then set +e; set -a; source "${env_file}" 2>/dev/null; set +a; set -e; fi
 
     nohup openclaw node run --host 127.0.0.1 --port 18789 > "${node_log}" 2>&1 &
     local node_pid=$!

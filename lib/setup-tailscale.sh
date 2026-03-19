@@ -136,7 +136,7 @@ print(dns_name.rstrip('.'))
             kill "${old_pid}" 2>/dev/null || true
             sleep 2
             local env_file="${HOME}/.openclaw/gateway.env"
-            [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+            if [[ -f "${env_file}" ]]; then set +e; set -a; source "${env_file}" 2>/dev/null; set +a; set -e; fi
             nohup openclaw gateway run --bind loopback > "${gateway_log}" 2>&1 &
             local gw_pid=$!
             echo "${gw_pid}" > "${gateway_pid_file}"

@@ -21,7 +21,7 @@ detect_hardware() {
     # ── Memory ──────────────────────────────────────────────────────────────
     if [[ -f /proc/meminfo ]]; then
         local mem_kb
-        mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+        mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
         HW_TOTAL_RAM_MB=$(( mem_kb / 1024 ))
     elif check_command sysctl; then
         local mem_bytes

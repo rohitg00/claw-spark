@@ -10,14 +10,17 @@ setup_inference() {
 
     # ── Install Ollama if missing ───────────────────────────────────────────
     if ! check_command ollama; then
-        log_info "Ollama not found — installing..."
-        (curl -fsSL https://ollama.com/install.sh | sh) >> "${CLAWSPARK_LOG}" 2>&1 &
-        spinner $! "Installing Ollama..."
+        log_info "Ollama not found — installing (this needs sudo)..."
+        # Run in foreground so sudo can prompt for password
+        if curl -fsSL https://ollama.com/install.sh | sh >> "${CLAWSPARK_LOG}" 2>&1; then
+            log_success "Ollama installed."
+        else
+            log_warn "Ollama install script returned an error."
+        fi
         if ! check_command ollama; then
             log_error "Ollama installation failed. Check ${CLAWSPARK_LOG} for details."
             return 1
         fi
-        log_success "Ollama installed."
     else
         log_success "Ollama is already installed."
     fi
@@ -43,12 +46,10 @@ setup_inference() {
 
     # ── Pull the selected model ─────────────────────────────────────────────
     log_info "Pulling model: ${SELECTED_MODEL_ID} (this may take a while)..."
-    if ollama list 2>/dev/null | grep -q "${SELECTED_MODEL_ID}"; then
+    if ollama list 2>/dev/null | grep -qF "${SELECTED_MODEL_ID}"; then
         log_success "Model ${SELECTED_MODEL_ID} is already available locally."
     else
-        ollama pull "${SELECTED_MODEL_ID}" 2>&1 | tee -a "${CLAWSPARK_LOG}"
-        local pull_rc=${PIPESTATUS[0]}
-        if [[ ${pull_rc} -ne 0 ]]; then
+        if ! ollama pull "${SELECTED_MODEL_ID}" 2>&1 | tee -a "${CLAWSPARK_LOG}"; then
             log_error "Failed to pull model ${SELECTED_MODEL_ID}."
             return 1
         fi
@@ -56,7 +57,7 @@ setup_inference() {
     fi
 
     # ── Verify model is listed ──────────────────────────────────────────────
-    if ! ollama list 2>/dev/null | grep -q "${SELECTED_MODEL_ID}"; then
+    if ! ollama list 2>/dev/null | grep -qF "${SELECTED_MODEL_ID}"; then
         log_error "Model ${SELECTED_MODEL_ID} not found in ollama list after pull."
         return 1
     fi

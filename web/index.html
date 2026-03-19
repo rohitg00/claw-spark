@@ -1076,6 +1076,13 @@
         </div>
         <div class="feature-card fade-in">
           <div class="feature-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h2l2 3 4-6h2"/></svg>
+          </div>
+          <h3>Diagrams and Architecture</h3>
+          <p>Ask for a flowchart, architecture diagram, or mindmap. MCP-powered Mermaid generates real PNG images from text. 20+ diagram types.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           </div>
           <h3>Survives Reboots</h3>
@@ -1177,14 +1184,15 @@
   <span class="arch-highlight">OpenClaw Gateway</span>  <span class="arch-dim">(port 18789)</span>
     <span class="arch-dim">|              |            |           |</span>
   <span class="arch-highlight">Agent</span>          <span class="arch-highlight">Node Host</span>    <span class="arch-highlight">Baileys</span>      <span class="arch-highlight">Sub-Agents</span>
-  <span class="arch-dim">(LLM)</span>         <span class="arch-dim">(26 tools)</span>   <span class="arch-dim">(WhatsApp)</span>   <span class="arch-dim">(parallel)</span>
-    <span class="arch-dim">|              |</span>
-  <span class="arch-highlight">Ollama</span>       <span class="arch-dim">exec, browser, read,</span>
-  <span class="arch-dim">(port 11434)</span>  <span class="arch-dim">write, web_search, vision</span>
-    <span class="arch-dim">|                   |</span>
-  <span class="arch-accent">Chat Model</span>     <span class="arch-highlight">Docker Sandbox</span>
-  <span class="arch-dim">+ Vision Model</span>  <span class="arch-dim">(isolated exec)</span>
-  <span class="arch-dim">(GB10 GPU)</span></pre>
+  <span class="arch-dim">(LLM)</span>         <span class="arch-dim">(28+ tools)</span>  <span class="arch-dim">(WhatsApp)</span>   <span class="arch-dim">(parallel)</span>
+    <span class="arch-dim">|              |              |</span>
+  <span class="arch-highlight">Ollama</span>       <span class="arch-dim">exec, browser,</span>   <span class="arch-highlight">MCP Servers</span>
+  <span class="arch-dim">(port 11434)</span>  <span class="arch-dim">read, write,</span>     <span class="arch-dim">(mcporter)</span>
+    <span class="arch-dim">|</span>           <span class="arch-dim">web_search,</span>      <span class="arch-dim">|</span>
+  <span class="arch-accent">Chat Model</span>  <span class="arch-dim">vision</span>      <span class="arch-dim">Mermaid, Memory,</span>
+  <span class="arch-dim">+ Vision</span>        <span class="arch-dim">|</span>        <span class="arch-dim">Filesystem, Thinking</span>
+  <span class="arch-dim">(GB10 GPU)</span>  <span class="arch-highlight">Docker Sandbox</span>
+              <span class="arch-dim">(isolated exec)</span></pre>
       </div>
       <div class="stat-boxes">
         <div class="stat-box fade-in">
@@ -1200,8 +1208,8 @@
           <div class="stat-label">AI Compute</div>
         </div>
         <div class="stat-box fade-in">
-          <div class="stat-value">26+ Tools</div>
-          <div class="stat-label">Agent Capabilities</div>
+          <div class="stat-value">28+ Tools</div>
+          <div class="stat-label">Agent + MCP Tools</div>
         </div>
       </div>
     </div>

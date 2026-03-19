@@ -62,10 +62,15 @@ with open(path) as f:
     cfg = json.load(f)
 cfg.setdefault('models', {}).setdefault('providers', {}).setdefault('ollama', {})
 cfg['models']['providers']['ollama'].setdefault('baseUrl', 'http://127.0.0.1:11434/v1')
+# Use openai-completions api -- Ollama's /v1 endpoint is OpenAI-compatible
+# and the built-in openai-completions provider is always registered,
+# unlike the dynamic 'ollama' api which is missing from the vision code path.
+cfg['models']['providers']['ollama']['api'] = 'openai-completions'
 cfg['models']['providers']['ollama']['models'] = [
     {
         'id': model_id,
         'name': model_id.replace(':', ' ').title(),
+        'api': 'openai-completions',
         'input': ['text', 'image'],
         'contextWindow': 32768,
         'maxTokens': 8192

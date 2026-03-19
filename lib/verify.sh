@@ -22,18 +22,18 @@ verify_installation() {
     printf '\n'
 
     # ── 1. Hardware ─────────────────────────────────────────────────────────
-    local ram_gb=$(( HW_TOTAL_RAM_MB / 1024 ))
+    local ram_gb=$(( ${HW_TOTAL_RAM_MB:-0} / 1024 ))
     local platform_label
-    case "${HW_PLATFORM}" in
+    case "${HW_PLATFORM:-generic}" in
         dgx-spark) platform_label="DGX Spark (${ram_gb}GB unified memory)" ;;
         jetson)    platform_label="Jetson (${ram_gb}GB)" ;;
-        rtx)       platform_label="RTX (${HW_GPU_VRAM_MB}MB VRAM)" ;;
+        rtx)       platform_label="RTX (${HW_GPU_VRAM_MB:-0}MB VRAM)" ;;
         *)         platform_label="Generic (${ram_gb}GB RAM)" ;;
     esac
     _check_pass "Hardware: ${platform_label}"
 
     # ── 2. Model ────────────────────────────────────────────────────────────
-    _check_pass "Model: ${SELECTED_MODEL_NAME} (${SELECTED_MODEL_ID})"
+    _check_pass "Model: ${SELECTED_MODEL_NAME:-unknown} (${SELECTED_MODEL_ID:-unknown})"
 
     # ── 3. Ollama ───────────────────────────────────────────────────────────
     if curl -sf http://127.0.0.1:11434/ &>/dev/null; then
@@ -77,7 +77,7 @@ verify_installation() {
         _check_fail "Tools: profile is '${tools_profile}' (should be 'full')"
     fi
 
-    # ── 6b. Node host ─────────────────────────────────────────────────────
+    # ── 7. Node host ──────────────────────────────────────────────────────
     if systemctl is-active --quiet clawspark-nodehost.service 2>/dev/null; then
         _check_pass "Node host: running (systemd)"
     elif [[ -f "${CLAWSPARK_DIR}/node.pid" ]]; then
@@ -92,14 +92,14 @@ verify_installation() {
         _check_fail "Node host: not started"
     fi
 
-    # ── 7. Skills ──────────────────────────────────────────────────────────
+    # ── 8. Skills ──────────────────────────────────────────────────────────
     local skill_count=0
     if [[ -f "${CLAWSPARK_DIR}/skills.yaml" ]]; then
         skill_count=$(grep -c '^ *- ' "${CLAWSPARK_DIR}/skills.yaml" 2>/dev/null || echo 0)
     fi
     _check_pass "Skills: ${skill_count} configured"
 
-    # ── 7. Voice ────────────────────────────────────────────────────────────
+    # ── 9. Voice ────────────────────────────────────────────────────────────
     local whisper_model="${WHISPER_MODEL:-unknown}"
     if [[ -f "${HOME}/.openclaw/skills/local-whisper/config.json" ]]; then
         _check_pass "Voice: Whisper ${whisper_model} ready"
@@ -107,14 +107,14 @@ verify_installation() {
         _check_fail "Voice: Whisper config not found"
     fi
 
-    # ── 8. Security ─────────────────────────────────────────────────────────
+    # ── 10. Security ────────────────────────────────────────────────────────
     if [[ -f "${CLAWSPARK_DIR}/token" ]]; then
         _check_pass "Security: localhost-only, token auth"
     else
         _check_fail "Security: token not generated"
     fi
 
-    # ── 9. Messaging ────────────────────────────────────────────────────────
+    # ── 11. Messaging ───────────────────────────────────────────────────────
     local msg_status="${MESSAGING_CHOICE:-skip}"
     if [[ "${msg_status}" != "skip" ]]; then
         _check_pass "Messaging: ${msg_status} configured"
@@ -122,7 +122,7 @@ verify_installation() {
         _check_pass "Messaging: skipped"
     fi
 
-    # ── 10. Quick benchmark ─────────────────────────────────────────────────
+    # ── 12. Quick benchmark ────────────────────────────────────────────────
     local toks_str="n/a"
     if curl -sf http://127.0.0.1:11434/ &>/dev/null; then
         toks_str=$(_run_benchmark)

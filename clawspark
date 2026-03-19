@@ -78,6 +78,10 @@ ${BOLD}Commands:${RESET}
   ${GREEN}sandbox on${RESET}          Enable Docker sandbox for code execution
   ${GREEN}sandbox off${RESET}         Disable sandbox (run code on host)
   ${GREEN}sandbox test${RESET}        Verify sandbox isolation with test suite
+  ${GREEN}mcp list${RESET}            List configured MCP servers
+  ${GREEN}mcp setup${RESET}           Install default MCP servers (diagrams, memory, etc.)
+  ${GREEN}mcp add <n> <cmd>${RESET}   Add a custom MCP server
+  ${GREEN}mcp remove <n>${RESET}      Remove an MCP server
   ${GREEN}help${RESET}                Show this help message
 
 USAGE
@@ -796,11 +800,21 @@ _cmd_logs() {
 _cmd_restart() {
     log_info "Restarting services..."
 
-    # Source gateway env
+    # Source gateway env (safely -- never let set -a leak)
     local env_file="${HOME}/.openclaw/gateway.env"
-    [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+    if [[ -f "${env_file}" ]]; then
+        set +e; set -a; source "${env_file}" 2>/dev/null; set +a; set -e
+    fi
 
-    # Restart Ollama -- if systemd-managed, try sudo but don't fail
+    # Detect if systemd is managing our services
+    local use_systemd=false
+    if check_command systemctl && systemctl is-active --quiet clawspark-gateway.service 2>/dev/null; then
+        use_systemd=true
+    elif check_command systemctl && systemctl is-enabled --quiet clawspark-gateway.service 2>/dev/null; then
+        use_systemd=true
+    fi
+
+    # Restart Ollama
     if check_command systemctl && systemctl is-enabled ollama &>/dev/null; then
         if sudo -n systemctl restart ollama 2>/dev/null; then
             log_success "Ollama restarted via systemctl."
@@ -810,7 +824,7 @@ _cmd_restart() {
             log_warn "Ollama needs sudo to restart. Run: sudo systemctl restart ollama"
         fi
     elif [[ -f "${CLAWSPARK_DIR}/ollama.pid" ]]; then
-        kill "$(cat "${CLAWSPARK_DIR}/ollama.pid")" 2>/dev/null || true
+        _kill_pid_file "${CLAWSPARK_DIR}/ollama.pid"
         sleep 1
         nohup ollama serve >> "${CLAWSPARK_DIR}/ollama.log" 2>&1 &
         echo $! > "${CLAWSPARK_DIR}/ollama.pid"
@@ -829,31 +843,48 @@ _cmd_restart() {
         sleep 1
     done
 
-    # Kill existing gateway and node host
-    _kill_pid_file "${CLAWSPARK_DIR}/gateway.pid"
-    _kill_pid_file "${CLAWSPARK_DIR}/node.pid"
-    _kill_pid_file "${CLAWSPARK_DIR}/dashboard.pid"
-    sleep 2
-
-    # Start gateway
-    if check_command openclaw; then
-        nohup openclaw gateway run --bind loopback > "${CLAWSPARK_DIR}/gateway.log" 2>&1 &
-        echo $! > "${CLAWSPARK_DIR}/gateway.pid"
-        log_success "Gateway started (PID $!)."
+    if [[ "${use_systemd}" == "true" ]]; then
+        # Let systemd handle the restart
+        sudo -n systemctl restart clawspark-gateway.service 2>/dev/null || {
+            log_warn "Gateway needs sudo to restart. Run: sudo systemctl restart clawspark-gateway"
+        }
+        sleep 3
+        sudo -n systemctl restart clawspark-nodehost.service 2>/dev/null || {
+            log_warn "Node host needs sudo to restart. Run: sudo systemctl restart clawspark-nodehost"
+        }
+        if systemctl is-enabled --quiet clawspark-dashboard.service 2>/dev/null; then
+            sudo -n systemctl restart clawspark-dashboard.service 2>/dev/null || true
+        fi
+        sleep 2
+        # Verify
+        systemctl is-active --quiet clawspark-gateway.service 2>/dev/null && log_success "Gateway restarted (systemd)." || log_warn "Gateway may not have restarted."
+        systemctl is-active --quiet clawspark-nodehost.service 2>/dev/null && log_success "Node host restarted (systemd)." || log_warn "Node host may not have restarted."
     else
-        log_warn "openclaw not found, gateway not started."
-        return 1
+        # PID-based management
+        _kill_pid_file "${CLAWSPARK_DIR}/gateway.pid"
+        _kill_pid_file "${CLAWSPARK_DIR}/node.pid"
+        _kill_pid_file "${CLAWSPARK_DIR}/dashboard.pid"
+        _kill_by_name "openclaw gateway"
+        _kill_by_name "openclaw node"
+        sleep 2
+
+        if check_command openclaw; then
+            nohup openclaw gateway run --bind loopback > "${CLAWSPARK_DIR}/gateway.log" 2>&1 &
+            echo $! > "${CLAWSPARK_DIR}/gateway.pid"
+            log_success "Gateway started (PID $!)."
+        else
+            log_warn "openclaw not found, gateway not started."
+            return 1
+        fi
+
+        sleep 3
+
+        nohup openclaw node run --host 127.0.0.1 --port 18789 > "${CLAWSPARK_DIR}/node.log" 2>&1 &
+        echo $! > "${CLAWSPARK_DIR}/node.pid"
+        log_success "Node host started (PID $!)."
+
+        _start_dashboard
     fi
-
-    sleep 3
-
-    # Start node host
-    nohup openclaw node run --host 127.0.0.1 --port 18789 > "${CLAWSPARK_DIR}/node.log" 2>&1 &
-    echo $! > "${CLAWSPARK_DIR}/node.pid"
-    log_success "Node host started (PID $!)."
-
-    # Start dashboard
-    _start_dashboard
 
     sleep 2
     log_success "All services restarted."
@@ -863,9 +894,17 @@ _cmd_restart() {
 _cmd_start() {
     log_info "Starting services..."
 
-    # Source gateway env
+    # Source gateway env (safely)
     local env_file="${HOME}/.openclaw/gateway.env"
-    [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+    if [[ -f "${env_file}" ]]; then
+        set +e; set -a; source "${env_file}" 2>/dev/null; set +a; set -e
+    fi
+
+    # Detect systemd management
+    local use_systemd=false
+    if check_command systemctl && systemctl is-enabled --quiet clawspark-gateway.service 2>/dev/null; then
+        use_systemd=true
+    fi
 
     # Start Ollama
     if curl -sf http://127.0.0.1:11434/ &>/dev/null; then
@@ -886,33 +925,51 @@ _cmd_start() {
         sleep 1
     done
 
-    # Start gateway (if not already running)
-    if [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/gateway.pid" 2>/dev/null)" 2>/dev/null; then
-        log_info "Gateway already running."
-    elif check_command openclaw; then
-        nohup openclaw gateway run --bind loopback > "${CLAWSPARK_DIR}/gateway.log" 2>&1 &
-        echo $! > "${CLAWSPARK_DIR}/gateway.pid"
-        log_success "Gateway started (PID $!)."
-        sleep 3
+    if [[ "${use_systemd}" == "true" ]]; then
+        # Use systemd
+        if systemctl is-active --quiet clawspark-gateway.service 2>/dev/null; then
+            log_info "Gateway already running (systemd)."
+        else
+            sudo -n systemctl start clawspark-gateway.service 2>/dev/null || log_warn "Gateway needs sudo. Run: sudo systemctl start clawspark-gateway"
+        fi
+        sleep 2
+        if systemctl is-active --quiet clawspark-nodehost.service 2>/dev/null; then
+            log_info "Node host already running (systemd)."
+        else
+            sudo -n systemctl start clawspark-nodehost.service 2>/dev/null || log_warn "Node host needs sudo. Run: sudo systemctl start clawspark-nodehost"
+        fi
+        if systemctl is-enabled --quiet clawspark-dashboard.service 2>/dev/null; then
+            if ! systemctl is-active --quiet clawspark-dashboard.service 2>/dev/null; then
+                sudo -n systemctl start clawspark-dashboard.service 2>/dev/null || true
+            fi
+        fi
     else
-        log_warn "openclaw not found, gateway not started."
-        return 1
-    fi
+        # PID-based management
+        if [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/gateway.pid" 2>/dev/null)" 2>/dev/null; then
+            log_info "Gateway already running."
+        elif check_command openclaw; then
+            nohup openclaw gateway run --bind loopback > "${CLAWSPARK_DIR}/gateway.log" 2>&1 &
+            echo $! > "${CLAWSPARK_DIR}/gateway.pid"
+            log_success "Gateway started (PID $!)."
+            sleep 3
+        else
+            log_warn "openclaw not found, gateway not started."
+            return 1
+        fi
 
-    # Start node host (if not already running)
-    if [[ -f "${CLAWSPARK_DIR}/node.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/node.pid" 2>/dev/null)" 2>/dev/null; then
-        log_info "Node host already running."
-    elif check_command openclaw; then
-        nohup openclaw node run --host 127.0.0.1 --port 18789 > "${CLAWSPARK_DIR}/node.log" 2>&1 &
-        echo $! > "${CLAWSPARK_DIR}/node.pid"
-        log_success "Node host started (PID $!)."
-    fi
+        if [[ -f "${CLAWSPARK_DIR}/node.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/node.pid" 2>/dev/null)" 2>/dev/null; then
+            log_info "Node host already running."
+        elif check_command openclaw; then
+            nohup openclaw node run --host 127.0.0.1 --port 18789 > "${CLAWSPARK_DIR}/node.log" 2>&1 &
+            echo $! > "${CLAWSPARK_DIR}/node.pid"
+            log_success "Node host started (PID $!)."
+        fi
 
-    # Start dashboard
-    if [[ -f "${CLAWSPARK_DIR}/dashboard.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/dashboard.pid" 2>/dev/null)" 2>/dev/null; then
-        log_info "Dashboard already running."
-    else
-        _start_dashboard
+        if [[ -f "${CLAWSPARK_DIR}/dashboard.pid" ]] && kill -0 "$(cat "${CLAWSPARK_DIR}/dashboard.pid" 2>/dev/null)" 2>/dev/null; then
+            log_info "Dashboard already running."
+        else
+            _start_dashboard
+        fi
     fi
 }
 
@@ -925,20 +982,36 @@ _cmd_stop() {
 
     log_info "Stopping services..."
 
-    # Stop dashboard
-    _kill_pid_file "${CLAWSPARK_DIR}/dashboard.pid"
-    _kill_by_name "clawmetry"
-    log_success "Dashboard stopped."
+    # Detect systemd management
+    local use_systemd=false
+    if check_command systemctl && systemctl is-enabled --quiet clawspark-gateway.service 2>/dev/null; then
+        use_systemd=true
+    fi
 
-    # Stop node host
-    _kill_pid_file "${CLAWSPARK_DIR}/node.pid"
-    _kill_by_name "openclaw-node"
-    log_success "Node host stopped."
+    if [[ "${use_systemd}" == "true" ]]; then
+        # Stop via systemd
+        if systemctl is-enabled --quiet clawspark-dashboard.service 2>/dev/null; then
+            sudo -n systemctl stop clawspark-dashboard.service 2>/dev/null || true
+            log_success "Dashboard stopped (systemd)."
+        fi
+        sudo -n systemctl stop clawspark-nodehost.service 2>/dev/null || true
+        log_success "Node host stopped (systemd)."
+        sudo -n systemctl stop clawspark-gateway.service 2>/dev/null || true
+        log_success "Gateway stopped (systemd)."
+    else
+        # PID-based stop
+        _kill_pid_file "${CLAWSPARK_DIR}/dashboard.pid"
+        _kill_by_name "clawmetry"
+        log_success "Dashboard stopped."
 
-    # Stop gateway
-    _kill_pid_file "${CLAWSPARK_DIR}/gateway.pid"
-    _kill_by_name "openclaw-gateway"
-    log_success "Gateway stopped."
+        _kill_pid_file "${CLAWSPARK_DIR}/node.pid"
+        _kill_by_name "openclaw node"
+        log_success "Node host stopped."
+
+        _kill_pid_file "${CLAWSPARK_DIR}/gateway.pid"
+        _kill_by_name "openclaw gateway"
+        log_success "Gateway stopped."
+    fi
 
     # Stop Ollama only with --all flag
     if ${stop_all}; then
@@ -1195,6 +1268,23 @@ with open(path, 'r') as f:
 cfg.setdefault('agents', {}).setdefault('defaults', {})
 cfg['agents']['defaults']['imageModel'] = model
 
+# Register inline model with vision capability and openai-completions api
+# so OpenClaw's image analysis path can find the right streaming provider.
+raw_id = model.replace('ollama/', '', 1) if model.startswith('ollama/') else model
+prov = cfg.setdefault('models', {}).setdefault('providers', {}).setdefault('ollama', {})
+prov.setdefault('baseUrl', 'http://127.0.0.1:11434/v1')
+prov['api'] = 'openai-completions'
+prov['models'] = [
+    {
+        'id': raw_id,
+        'name': raw_id.replace(':', ' ').title(),
+        'api': 'openai-completions',
+        'input': ['text', 'image'],
+        'contextWindow': 32768,
+        'maxTokens': 8192
+    }
+]
+
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)
 print('ok')
@@ -1205,6 +1295,117 @@ print('ok')
 
     log_success "Vision model set to: ${model_id}"
     log_info "Restart to apply: clawspark restart"
+}
+
+# ── mcp ─────────────────────────────────────────────────────────────────────
+_cmd_mcp() {
+    local subcmd="${1:-list}"
+    shift || true
+
+    local mcporter_config="${HOME}/.mcporter/mcporter.json"
+
+    case "${subcmd}" in
+        list|ls)
+            if ! check_command mcporter; then
+                log_error "mcporter not installed. Run: npm install -g mcporter"
+                return 1
+            fi
+            printf '\n  %s%sMCP Servers:%s\n\n' "${BOLD}" "${CYAN}" "${RESET}"
+            if [[ -f "${mcporter_config}" ]]; then
+                python3 -c "
+import json
+with open('${mcporter_config}') as f:
+    cfg = json.load(f)
+servers = cfg.get('mcpServers', {})
+if not servers:
+    print('  No MCP servers configured.')
+else:
+    for name, conf in servers.items():
+        cmd = conf.get('command', conf.get('baseUrl', '?'))
+        args = ' '.join(conf.get('args', []))
+        print(f'  \033[32m*\033[0m {name:20s} {cmd} {args}')
+" 2>/dev/null || log_warn "Could not read mcporter config."
+            else
+                log_info "No mcporter config found. Run: clawspark mcp setup"
+            fi
+            printf '\n'
+            ;;
+        setup)
+            if [[ -f "${CLAWSPARK_DIR}/lib/setup-mcp.sh" ]]; then
+                source "${CLAWSPARK_DIR}/lib/setup-mcp.sh"
+                setup_mcp
+            else
+                log_error "setup-mcp.sh not found. Reinstall clawspark."
+            fi
+            ;;
+        add)
+            local server_name="${1:-}"
+            local server_cmd="${2:-}"
+            [[ -z "${server_name}" ]] && { log_error "Usage: clawspark mcp add <name> <command> [args...]"; return 1; }
+            [[ -z "${server_cmd}" ]] && { log_error "Usage: clawspark mcp add <name> <command> [args...]"; return 1; }
+            shift 2 || true
+            local server_args=("$@")
+
+            mkdir -p "$(dirname "${mcporter_config}")"
+            python3 -c "
+import json, sys, os
+config_path = sys.argv[1]
+name = sys.argv[2]
+cmd = sys.argv[3]
+args = sys.argv[4:]
+
+cfg = {}
+if os.path.exists(config_path):
+    with open(config_path) as f:
+        cfg = json.load(f)
+
+cfg.setdefault('mcpServers', {})[name] = {
+    'command': cmd,
+    'args': args,
+    'env': {}
+}
+
+with open(config_path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('ok')
+" "${mcporter_config}" "${server_name}" "${server_cmd}" "${server_args[@]}" 2>> "${CLAWSPARK_LOG}" || {
+                log_error "Failed to add MCP server."
+                return 1
+            }
+            log_success "Added MCP server: ${server_name}"
+            ;;
+        remove|rm)
+            local server_name="${1:-}"
+            [[ -z "${server_name}" ]] && { log_error "Usage: clawspark mcp remove <name>"; return 1; }
+            python3 -c "
+import json, sys, os
+config_path = sys.argv[1]
+name = sys.argv[2]
+if not os.path.exists(config_path):
+    print('no config')
+    sys.exit(0)
+with open(config_path) as f:
+    cfg = json.load(f)
+servers = cfg.get('mcpServers', {})
+if name in servers:
+    del servers[name]
+    with open(config_path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+    print('removed')
+else:
+    print('not found')
+" "${mcporter_config}" "${server_name}" 2>> "${CLAWSPARK_LOG}"
+            log_success "Removed MCP server: ${server_name}"
+            ;;
+        *)
+            printf 'Usage: clawspark mcp <command>\n\n'
+            printf 'Commands:\n'
+            printf '  list          List configured MCP servers\n'
+            printf '  setup         Run MCP setup (install defaults)\n'
+            printf '  add <n> <cmd> Add a custom MCP server\n'
+            printf '  remove <n>    Remove an MCP server\n'
+            ;;
+    esac
 }
 
 # ── tools ───────────────────────────────────────────────────────────────────
@@ -1533,6 +1734,7 @@ case "${cmd}" in
     status)     _cmd_status ;;
     skills)     _cmd_skills "$@" ;;
     tools)      _cmd_tools "$@" ;;
+    mcp)        _cmd_mcp "$@" ;;
     model)      _cmd_model "$@" ;;
     benchmark)  _cmd_benchmark ;;
     update)     _cmd_update ;;

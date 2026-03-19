@@ -51,7 +51,7 @@ Wants=ollama.service
 Type=simple
 User=${user_name}
 Environment=HOME=${user_home}
-EnvironmentFile=${env_file}
+EnvironmentFile=-${env_file}
 ExecStart=${openclaw_bin} gateway run --bind loopback
 Restart=on-failure
 RestartSec=5
@@ -74,7 +74,7 @@ Requires=clawspark-gateway.service
 Type=simple
 User=${user_name}
 Environment=HOME=${user_home}
-EnvironmentFile=${env_file}
+EnvironmentFile=-${env_file}
 ExecStartPre=/bin/sleep 3
 ExecStart=${openclaw_bin} node run --host 127.0.0.1 --port 18789
 Restart=on-failure
@@ -135,27 +135,27 @@ DBEOF
     # This ensures a clean state right now, not just after next reboot.
     log_info "Migrating running services to systemd..."
 
-    # Stop nohup gateway
-    if [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]]; then
-        local gw_pid
-        gw_pid=$(cat "${CLAWSPARK_DIR}/gateway.pid")
-        kill "${gw_pid}" 2>/dev/null || true
-        rm -f "${CLAWSPARK_DIR}/gateway.pid"
-    fi
-    # Stop nohup node host
-    if [[ -f "${CLAWSPARK_DIR}/node.pid" ]]; then
-        local nh_pid
-        nh_pid=$(cat "${CLAWSPARK_DIR}/node.pid")
-        kill "${nh_pid}" 2>/dev/null || true
-        rm -f "${CLAWSPARK_DIR}/node.pid"
-    fi
-    # Stop nohup dashboard
-    if [[ -f "${CLAWSPARK_DIR}/dashboard.pid" ]]; then
-        local db_pid
-        db_pid=$(cat "${CLAWSPARK_DIR}/dashboard.pid")
-        kill "${db_pid}" 2>/dev/null || true
-        rm -f "${CLAWSPARK_DIR}/dashboard.pid"
-    fi
+    # Helper: safely kill a PID from a pid file (validates numeric + process identity)
+    _safe_kill_pid() {
+        local pid_file="$1" name_hint="$2"
+        if [[ -f "${pid_file}" ]]; then
+            local pid
+            pid=$(cat "${pid_file}" 2>/dev/null || echo "")
+            if [[ -n "${pid}" ]] && [[ "${pid}" =~ ^[0-9]+$ ]]; then
+                # Verify the PID belongs to an openclaw/clawmetry process
+                local proc_cmd
+                proc_cmd=$(ps -p "${pid}" -o comm= 2>/dev/null || echo "")
+                if [[ "${proc_cmd}" == *"openclaw"* ]] || [[ "${proc_cmd}" == *"clawmetry"* ]] || [[ "${proc_cmd}" == *"python"* ]]; then
+                    kill "${pid}" 2>/dev/null || true
+                fi
+            fi
+            rm -f "${pid_file}"
+        fi
+    }
+
+    _safe_kill_pid "${CLAWSPARK_DIR}/gateway.pid" "gateway"
+    _safe_kill_pid "${CLAWSPARK_DIR}/node.pid" "node"
+    _safe_kill_pid "${CLAWSPARK_DIR}/dashboard.pid" "dashboard"
 
     sleep 2
 

@@ -49,7 +49,7 @@ setup_openclaw() {
     log_info "Running OpenClaw onboard..."
     # Source the env file so onboard can reach Ollama
     local env_file="${HOME}/.openclaw/gateway.env"
-    [[ -f "${env_file}" ]] && set -a && source "${env_file}" && set +a
+    if [[ -f "${env_file}" ]]; then set +e; set -a; source "${env_file}" 2>/dev/null; set +a; set -e; fi
 
     openclaw onboard \
         --non-interactive \
@@ -444,7 +444,8 @@ PROFILEEOF
 }
 
 _write_workspace_files() {
-    local ws_dir="${HOME}/.openclaw/workspace"
+    # Write to the same workspace dir configured in openclaw.json (~/workspace)
+    local ws_dir="${HOME}/workspace"
     mkdir -p "${ws_dir}"
     # Remove read-only from previous installs so we can overwrite
     chmod 644 "${ws_dir}/SOUL.md" "${ws_dir}/TOOLS.md" 2>/dev/null || true
@@ -495,6 +496,34 @@ Sub-agents can use all tools except session tools (no recursive spawning).
 ## Memory & Knowledge
 - **memory_search** -- Search your stored memories and context
 - **memory_store** -- Save information for future sessions
+
+## MCP Tools (via mcporter)
+
+You have MCP servers available via the `mcporter` CLI. Use exec to call them:
+
+### Mermaid Diagrams (20 types: flowchart, sequence, class, C4, mindmap, gantt, etc.)
+To create a diagram:
+1. Learn the syntax: exec command="mcporter call mermaid.get_diagram_examples diagramType=flowchart"
+2. Write the Mermaid code based on what the user wants
+3. Save it to a .mmd file and render: exec command="npx -y @mermaid-js/mermaid-cli mmdc -i diagram.mmd -o diagram.png"
+4. Send the PNG to the user
+
+Available diagram types: flowchart, sequenceDiagram, classDiagram, stateDiagram, c4, mindmap,
+timeline, gantt, pie, sankey, xyChart, block, kanban, radar, and more.
+
+### Memory (persistent knowledge graph)
+Store info: exec command="mcporter call memory.create_entities entities='[{\"name\":\"project\",\"entityType\":\"project\",\"observations\":[\"Uses React\"]}]'"
+Search: exec command="mcporter call memory.search_nodes query='project details'"
+Great for remembering user preferences, project context, and past decisions.
+
+### Filesystem (14 tools)
+exec command="mcporter call filesystem.read_file path=/home/saiyam/workspace/file.txt"
+
+### Sequential Thinking
+exec command="mcporter call sequentialthinking.sequentialthinking thought='Step 1: ...' nextThoughtNeeded=true thoughtNumber=1 totalThoughts=5"
+
+When asked to create diagrams, architecture drawings, or flowcharts, ALWAYS generate them as
+actual images using Mermaid. Do NOT just describe what a diagram would look like in text.
 
 ## Web Search
 
