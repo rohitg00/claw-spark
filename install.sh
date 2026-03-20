@@ -186,6 +186,18 @@ _show_banner
 #  INSTALLATION FLOW
 # ════════════════════════════════════════════════════════════════════════════
 
+# ── Cache sudo credentials upfront so the install never pauses for password ──
+if sudo -v 2>/dev/null; then
+    log_info "sudo credentials cached."
+    # Keep sudo alive in background for the duration of the install
+    ( while true; do sudo -n true 2>/dev/null; sleep 50; done ) &
+    SUDO_KEEPALIVE_PID=$!
+    trap 'kill ${SUDO_KEEPALIVE_PID} 2>/dev/null; _on_error ${LINENO}' ERR
+    trap 'kill ${SUDO_KEEPALIVE_PID} 2>/dev/null' EXIT
+else
+    log_warn "sudo not available. Some steps (firewall, systemd) will be skipped."
+fi
+
 # ── Step 2: Hardware detection ──────────────────────────────────────────────
 log_info "Step 2/19: Detecting hardware"
 detect_hardware

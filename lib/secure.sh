@@ -30,8 +30,11 @@ secure_setup() {
     log_success "Restricted permissions on ~/.openclaw and ~/.clawspark"
 
     # ── Firewall (UFW) ─────────────────────────────────────────────────────
-    if check_command ufw; then
+    if check_command ufw && sudo -n true 2>/dev/null; then
         _configure_ufw
+    elif check_command ufw; then
+        log_info "UFW found but sudo not available -- skipping firewall config."
+        log_info "Run 'sudo ufw enable' manually to configure firewall."
     else
         log_info "UFW not found — skipping firewall configuration."
         log_info "Consider installing a firewall for production use."
