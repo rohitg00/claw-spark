@@ -12,11 +12,19 @@ setup_systemd_services() {
     fi
 
     # Verify systemd is actually running (not just the binary present)
-    if ! systemctl is-system-running &>/dev/null && \
-       ! systemctl is-system-running 2>&1 | grep -q 'running\|degraded\|starting'; then
-        log_info "systemd not active -- skipping service creation."
-        return 0
-    fi
+    # is-system-running returns non-zero for "degraded" (common when minor
+    # services fail), so we must check the output text, not the exit code.
+    local sys_state
+    sys_state=$(systemctl is-system-running 2>/dev/null || true)
+    case "${sys_state}" in
+        running|degraded|starting|initializing)
+            log_info "systemd active (state: ${sys_state})."
+            ;;
+        *)
+            log_info "systemd not active (state: ${sys_state}) -- skipping service creation."
+            return 0
+            ;;
+    esac
 
     log_info "Creating systemd services for auto-start on boot..."
 
