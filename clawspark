@@ -181,14 +181,15 @@ _wait_for_ollama() {
         attempts=$(( attempts + 1 ))
         sleep 1
     done
+    log_error "Ollama failed to become ready after 15 seconds."
     return 1
 }
 
 _detect_systemd() {
-    if check_command systemctl && systemctl is-active --quiet clawspark-gateway.service 2>/dev/null; then
-        echo "true"; return
+    if ! check_command systemctl; then
+        echo "false"; return
     fi
-    if check_command systemctl && systemctl is-enabled --quiet clawspark-gateway.service 2>/dev/null; then
+    if systemctl cat clawspark-gateway.service &>/dev/null; then
         echo "true"; return
     fi
     echo "false"
@@ -848,7 +849,10 @@ _cmd_restart() {
         log_success "Ollama started (PID $!)."
     fi
 
-    _wait_for_ollama || true
+    if ! _wait_for_ollama; then
+        log_error "Aborting: Ollama backend is not ready."
+        return 1
+    fi
 
     if [[ "${use_systemd}" == "true" ]]; then
         sudo -n systemctl restart clawspark-gateway.service 2>/dev/null || {
@@ -914,7 +918,10 @@ _cmd_start() {
         log_success "Ollama started (PID $!)."
     fi
 
-    _wait_for_ollama || true
+    if ! _wait_for_ollama; then
+        log_error "Aborting: Ollama backend is not ready."
+        return 1
+    fi
 
     if [[ "${use_systemd}" == "true" ]]; then
         if systemctl is-active --quiet clawspark-gateway.service 2>/dev/null; then

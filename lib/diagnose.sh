@@ -508,21 +508,28 @@ _diagnose_security() {
         _check_fail "Token file: not found at ${token_file}"
     fi
 
-    local config_file="${HOME}/.openclaw/openclaw.json"
-    if [[ -f "${config_file}" ]] && check_command python3; then
-        local gw_mode
-        gw_mode=$(python3 -c "
-import json, sys
-c = json.load(open(sys.argv[1]))
-print(c.get('gateway',{}).get('mode','unknown'))
-" "${config_file}" 2>/dev/null || echo "unknown")
-        if [[ "${gw_mode}" == "local" ]]; then
-            _check_pass "Gateway binding: localhost only (mode=local)"
-        elif [[ "${gw_mode}" == "unknown" ]]; then
-            _check_warn "Gateway binding: mode not set in config"
-        else
-            _check_warn "Gateway binding: mode=${gw_mode} (expected 'local')"
+    local bind_value=""
+    if check_command systemctl && systemctl cat clawspark-gateway.service &>/dev/null; then
+        bind_value=$(systemctl show -p ExecStart clawspark-gateway.service 2>/dev/null \
+            | grep -oE '\-\-bind[= ]*(loopback|[^ ]*)' | head -1 || echo "")
+    fi
+    if [[ -z "${bind_value}" ]] && [[ -f "${CLAWSPARK_DIR}/gateway.pid" ]]; then
+        local gw_pid
+        gw_pid=$(cat "${CLAWSPARK_DIR}/gateway.pid" 2>/dev/null || echo "")
+        if [[ -n "${gw_pid}" ]] && [[ -d "/proc/${gw_pid}" ]]; then
+            bind_value=$(tr '\0' ' ' < "/proc/${gw_pid}/cmdline" 2>/dev/null \
+                | grep -oE '\-\-bind[= ]*(loopback|[^ ]*)' | head -1 || echo "")
+        elif [[ -n "${gw_pid}" ]]; then
+            bind_value=$(ps -p "${gw_pid}" -o args= 2>/dev/null \
+                | grep -oE '\-\-bind[= ]*(loopback|[^ ]*)' | head -1 || echo "")
         fi
+    fi
+    if [[ "${bind_value}" == *"loopback"* ]]; then
+        _check_pass "Gateway binding: localhost only (--bind loopback)"
+    elif [[ -n "${bind_value}" ]]; then
+        _check_warn "Gateway binding: ${bind_value} (expected --bind loopback)"
+    else
+        _check_warn "Gateway binding: unable to determine (process not running or no --bind flag)"
     fi
 
     if check_command ufw; then
@@ -612,10 +619,8 @@ _write_report() {
     {
         echo "ClawSpark Diagnostic Report"
         echo "Generated: ${timestamp}"
-        echo "Host: $(hostname 2>/dev/null || echo 'unknown')"
         echo "OS: $(uname -s 2>/dev/null || echo 'unknown') $(uname -r 2>/dev/null || echo '')"
         echo "Bash: ${BASH_VERSION:-unknown}"
-        echo "User: ${USER:-unknown}"
         echo "========================================="
         for line in "${report_lines[@]}"; do
             echo "${line}"

@@ -1,100 +1,80 @@
 #!/usr/bin/env bats
-# security.bats -- Tests for security functions.
+# security.bats -- Tests for security functions (sources real lib/secure.sh).
 
 load test_helper
 
-# ── Token generation ──────────────────────────────────────────────────────────
+setup() {
+    TEST_TEMP_DIR="$(mktemp -d)"
+    export CLAWSPARK_DIR="${TEST_TEMP_DIR}/.clawspark"
+    export CLAWSPARK_LOG="${CLAWSPARK_DIR}/install.log"
+    export CLAWSPARK_DEFAULTS="true"
+    export HOME="${TEST_TEMP_DIR}"
 
-@test "token generation creates a token file" {
-    local token_file="${CLAWSPARK_DIR}/token"
-    local token
-    token=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n')
-    echo "${token}" > "${token_file}"
-    chmod 600 "${token_file}"
+    mkdir -p "${CLAWSPARK_DIR}/lib"
+    mkdir -p "${HOME}/.openclaw"
 
-    [ -f "${token_file}" ]
+    if [[ ! -f "${PROJECT_ROOT}/lib/common.sh" ]]; then
+        echo "ERROR: lib/common.sh not found at ${PROJECT_ROOT}" >&2
+        return 1
+    fi
+    cp "${PROJECT_ROOT}/lib/common.sh" "${CLAWSPARK_DIR}/lib/common.sh"
+    cp "${PROJECT_ROOT}/lib/secure.sh" "${CLAWSPARK_DIR}/lib/secure.sh"
+
+    source "${CLAWSPARK_DIR}/lib/common.sh"
+    source "${CLAWSPARK_DIR}/lib/secure.sh"
+
+    echo '{}' > "${HOME}/.openclaw/openclaw.json"
 }
 
-@test "generated token is 64 hex characters" {
-    local token_file="${CLAWSPARK_DIR}/token"
-    local token
-    token=$(openssl rand -hex 32)
-    echo "${token}" > "${token_file}"
+# ── Token generation via secure_setup ────────────────────────────────────────
 
+@test "secure_setup creates a token file" {
+    secure_setup 2>/dev/null
+    [ -f "${CLAWSPARK_DIR}/token" ]
+}
+
+@test "secure_setup generates a 64 hex char token" {
+    secure_setup 2>/dev/null
     local content
-    content=$(cat "${token_file}" | tr -d '\n')
+    content=$(cat "${CLAWSPARK_DIR}/token" | tr -d '\n')
     [[ "$content" =~ ^[0-9a-f]{64}$ ]]
 }
 
 @test "token file permissions are 600" {
-    local token_file="${CLAWSPARK_DIR}/token"
-    echo "test-token" > "${token_file}"
-    chmod 600 "${token_file}"
-
+    secure_setup 2>/dev/null
     local perms
-    perms=$(_get_permissions "${token_file}")
+    perms=$(_get_permissions "${CLAWSPARK_DIR}/token")
     [ "$perms" = "600" ]
 }
 
 @test "token file is not world-readable" {
-    local token_file="${CLAWSPARK_DIR}/token"
-    echo "secret" > "${token_file}"
-    chmod 600 "${token_file}"
-
+    secure_setup 2>/dev/null
     local perms
-    perms=$(_get_permissions "${token_file}")
-    # Verify 'other' permissions (third digit) are 0
+    perms=$(_get_permissions "${CLAWSPARK_DIR}/token")
     [[ "${perms: -1}" == "0" ]]
 }
 
-@test "token generation does not overwrite existing token" {
-    local token_file="${CLAWSPARK_DIR}/token"
-    echo "original-token-value" > "${token_file}"
-
-    # Simulate what secure.sh does: only write if file doesn't exist
-    if [[ ! -f "${token_file}" ]]; then
-        openssl rand -hex 32 > "${token_file}"
-    fi
-
-    run cat "${token_file}"
+@test "secure_setup does not overwrite existing token" {
+    echo "original-token-value" > "${CLAWSPARK_DIR}/token"
+    secure_setup 2>/dev/null
+    run cat "${CLAWSPARK_DIR}/token"
     [[ "$output" == "original-token-value" ]]
 }
 
-# ── CLAWSPARK_DIR permissions ─────────────────────────────────────────────────
+# ── CLAWSPARK_DIR permissions via secure_setup ────────────────────────────────
 
-@test "CLAWSPARK_DIR can be set to 700" {
-    chmod 700 "${CLAWSPARK_DIR}"
-
+@test "secure_setup restricts CLAWSPARK_DIR to 700" {
+    secure_setup 2>/dev/null
     local perms
     perms=$(_get_permissions "${CLAWSPARK_DIR}")
     [ "$perms" = "700" ]
 }
 
-# ── Deny commands list ────────────────────────────────────────────────────────
+# ── Tool hardening via _harden_tool_access ────────────────────────────────────
 
-@test "deny commands list contains destructive patterns" {
-    local config_file="${CLAWSPARK_DIR}/openclaw.json"
-    python3 -c "
-import json, sys
-cfg = {
-    'gateway': {
-        'nodes': {
-            'denyCommands': [
-                'rm -rf /',
-                'rm -rf ~',
-                'mkfs',
-                'dd if=',
-                'cat /etc/shadow',
-                'passwd',
-                'useradd',
-            ]
-        }
-    }
-}
-with open(sys.argv[1], 'w') as f:
-    json.dump(cfg, f)
-" "${config_file}"
-    [ -f "${config_file}" ]
+@test "_harden_tool_access applies deny commands" {
+    _harden_tool_access 2>/dev/null
+    local config_file="${HOME}/.openclaw/openclaw.json"
     run python3 -c "
 import json, sys
 with open(sys.argv[1]) as f:
@@ -109,25 +89,9 @@ print('ok')
     [[ "$output" == *"ok"* ]]
 }
 
-@test "deny commands list blocks package installation" {
-    local config_file="${CLAWSPARK_DIR}/openclaw.json"
-    python3 -c "
-import json, sys
-cfg = {
-    'gateway': {
-        'nodes': {
-            'denyCommands': [
-                'apt install',
-                'apt-get install',
-                'pip install',
-                'npm install -g',
-            ]
-        }
-    }
-}
-with open(sys.argv[1], 'w') as f:
-    json.dump(cfg, f)
-" "${config_file}"
+@test "_harden_tool_access blocks package installation" {
+    _harden_tool_access 2>/dev/null
+    local config_file="${HOME}/.openclaw/openclaw.json"
     run python3 -c "
 import json, sys
 with open(sys.argv[1]) as f:
@@ -142,20 +106,9 @@ print('ok')
     [[ "$output" == *"ok"* ]]
 }
 
-@test "workspace-only filesystem restriction can be set" {
-    local config_file="${CLAWSPARK_DIR}/openclaw.json"
-    python3 -c "
-import json, sys
-cfg = {
-    'tools': {
-        'fs': {
-            'workspaceOnly': True
-        }
-    }
-}
-with open(sys.argv[1], 'w') as f:
-    json.dump(cfg, f)
-" "${config_file}"
+@test "_harden_tool_access sets workspaceOnly" {
+    _harden_tool_access 2>/dev/null
+    local config_file="${HOME}/.openclaw/openclaw.json"
     run python3 -c "
 import json, sys
 with open(sys.argv[1]) as f:

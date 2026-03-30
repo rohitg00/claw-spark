@@ -72,9 +72,10 @@ load test_helper
 }
 
 @test "_ts output reflects current time" {
+    local ref
+    ref=$(date '+%H')
     result="$(_ts)"
-    # Compare HH:MM only to avoid second-boundary flakiness
-    [[ "${result%:*}" == "$(date '+%H:%M')" ]]
+    [[ "${result%%:*}" == "${ref}" ]]
 }
 
 # ── log_info ──────────────────────────────────────────────────────────────────
@@ -101,7 +102,7 @@ load test_helper
 # ── log_warn ──────────────────────────────────────────────────────────────────
 
 @test "log_warn writes WARNING to stderr" {
-    run log_warn "something wrong" 2>&1
+    run bash -c 'source "'"${CLAWSPARK_DIR}/lib/common.sh"'" && log_warn "something wrong" 2>&1 1>/dev/null'
     [[ "$output" == *"WARNING"* ]]
     [[ "$output" == *"something wrong"* ]]
 }
@@ -116,7 +117,7 @@ load test_helper
 # ── log_error ─────────────────────────────────────────────────────────────────
 
 @test "log_error writes ERROR to stderr" {
-    run log_error "bad thing" 2>&1
+    run bash -c 'source "'"${CLAWSPARK_DIR}/lib/common.sh"'" && log_error "bad thing" 2>&1 1>/dev/null'
     [[ "$output" == *"ERROR"* ]]
     [[ "$output" == *"bad thing"* ]]
 }

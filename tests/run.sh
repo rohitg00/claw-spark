@@ -14,10 +14,17 @@ elif [ -x "${SCRIPT_DIR}/.bats/bin/bats" ]; then
 else
     echo "bats not found. Installing bats-core locally..."
     BATS_TMP="${SCRIPT_DIR}/.bats"
-    git clone --depth 1 https://github.com/bats-core/bats-core.git "${BATS_TMP}" 2>/dev/null
+    CLONE_ERR=$(mktemp)
+    if ! git clone --depth 1 https://github.com/bats-core/bats-core.git "${BATS_TMP}" 2>"${CLONE_ERR}"; then
+        echo "ERROR: Failed to clone bats-core:" >&2
+        cat "${CLONE_ERR}" >&2
+        rm -f "${CLONE_ERR}"
+        exit 1
+    fi
+    rm -f "${CLONE_ERR}"
     BATS_BIN="${BATS_TMP}/bin/bats"
     if [ ! -x "${BATS_BIN}" ]; then
-        echo "ERROR: Failed to install bats-core." >&2
+        echo "ERROR: bats binary not found after clone." >&2
         exit 1
     fi
     echo "bats-core installed to ${BATS_TMP}"

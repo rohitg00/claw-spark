@@ -113,15 +113,26 @@ _escape_sed() {
 
 _get_stored_hash() {
     local json="$1"
-    local skill
-    skill=$(_escape_sed "$2")
-    echo "${json}" | grep -o "\"${skill}\":\"[a-f0-9]*\"" | cut -d'"' -f4 || echo ""
+    local skill="$2"
+    if check_command jq; then
+        echo "${json}" | jq -r --arg k "${skill}" '.[$k] // empty' 2>/dev/null || echo ""
+    else
+        local escaped
+        escaped=$(_escape_sed "${skill}")
+        echo "${json}" | grep -o "\"${escaped}\":\"[a-f0-9]*\"" | cut -d'"' -f4 || echo ""
+    fi
 }
 
 _set_hash_entry() {
     local json="$1"
     local skill="$2"
     local hash="$3"
+
+    if check_command jq; then
+        echo "${json}" | jq --arg k "${skill}" --arg v "${hash}" '.[$k] = $v' 2>/dev/null
+        return
+    fi
+
     local escaped_skill
     escaped_skill=$(_escape_sed "${skill}")
 

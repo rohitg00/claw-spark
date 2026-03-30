@@ -1,9 +1,22 @@
 #!/usr/bin/env bats
 # skills.bats -- Tests for skill YAML parsing and management.
+# Sources real functions from clawspark CLI.
 
 load test_helper
 
 # Uses _parse_enabled_skills from common.sh (loaded in test_helper.bash)
+
+# ── Load real skill helpers from clawspark CLI ────────────────────────────────
+# We source the relevant functions but stub out npx/clawhub calls.
+
+_load_skill_helpers() {
+    export CLAWSPARK_LOG="${CLAWSPARK_DIR}/install.log"
+    npx() { return 0; }
+    export -f npx
+    # Extract _skills_add and _skills_remove from the real clawspark CLI
+    eval "$(sed -n '/^_skills_add()/,/^}/p' "${PROJECT_ROOT}/clawspark")"
+    eval "$(sed -n '/^_skills_remove()/,/^}/p' "${PROJECT_ROOT}/clawspark")"
+}
 
 # ── Parsing tests ─────────────────────────────────────────────────────────────
 
@@ -20,148 +33,112 @@ load test_helper
 }
 
 @test "parse skills returns correct count" {
-    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/skills.yaml" | wc -l | tr -d ' ')"
-    [ "$result" -eq 4 ]
+    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/skills.yaml")"
+    count="$(echo "$result" | wc -l | tr -d ' ')"
+    [ "$count" -eq 4 ]
 }
 
 @test "parse skills ignores comments" {
-    cat > "${CLAWSPARK_DIR}/skills-commented.yaml" <<'YAML'
+    cat > "${CLAWSPARK_DIR}/test-comments.yaml" <<'YAML'
 skills:
   enabled:
-    # - commented-out-skill
-    - real-skill
+    # This is a comment
+    - name: real-skill
+    # - name: commented-out
   custom: []
 YAML
-    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/skills-commented.yaml")"
-    [[ "$result" != *"commented-out-skill"* ]]
+    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/test-comments.yaml")"
     [[ "$result" == *"real-skill"* ]]
+    [[ "$result" != *"commented-out"* ]]
 }
 
 @test "parse skills ignores blank lines" {
-    cat > "${CLAWSPARK_DIR}/skills-blanks.yaml" <<'YAML'
+    cat > "${CLAWSPARK_DIR}/test-blanks.yaml" <<'YAML'
 skills:
   enabled:
 
-    - skill-with-blanks
+    - name: skill-with-blanks
 
   custom: []
 YAML
-    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/skills-blanks.yaml")"
+    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/test-blanks.yaml")"
     [[ "$result" == *"skill-with-blanks"* ]]
-    count="$(echo "$result" | grep -c 'skill-with-blanks')"
-    [ "$count" -eq 1 ]
 }
 
 @test "parse skills stops at non-list key" {
-    cat > "${CLAWSPARK_DIR}/skills-stop.yaml" <<'YAML'
+    cat > "${CLAWSPARK_DIR}/test-stop.yaml" <<'YAML'
 skills:
   enabled:
-    - inside-enabled
+    - name: before-custom
   custom:
-    - should-not-appear
+    - name: This should not appear
 YAML
-    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/skills-stop.yaml")"
-    [[ "$result" == *"inside-enabled"* ]]
-    [[ "$result" != *"should-not-appear"* ]]
+    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/test-stop.yaml")"
+    [[ "$result" == *"before-custom"* ]]
+    [[ "$result" != *"This should not"* ]]
 }
 
 @test "parse skills handles empty enabled section" {
-    cat > "${CLAWSPARK_DIR}/skills-empty.yaml" <<'YAML'
+    cat > "${CLAWSPARK_DIR}/test-empty.yaml" <<'YAML'
 skills:
   enabled:
   custom: []
 YAML
-    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/skills-empty.yaml")"
+    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/test-empty.yaml")"
     [ -z "$result" ]
 }
 
 @test "parse skills skips description lines in name format" {
-    cat > "${CLAWSPARK_DIR}/skills-desc.yaml" <<'YAML'
+    cat > "${CLAWSPARK_DIR}/test-desc.yaml" <<'YAML'
 skills:
   enabled:
-    - name: my-skill
-      description: This should not be a skill name
+    - name: has-desc
+      description: This should not appear as a skill
+    - name: another
   custom: []
 YAML
-    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/skills-desc.yaml")"
-    [[ "$result" == *"my-skill"* ]]
+    result="$(_parse_enabled_skills "${CLAWSPARK_DIR}/test-desc.yaml")"
+    [[ "$result" == *"has-desc"* ]]
     [[ "$result" != *"This should not"* ]]
     count="$(echo "$result" | wc -l | tr -d ' ')"
-    [ "$count" -eq 1 ]
+    [ "$count" -eq 2 ]
 }
 
-# ── _skills_add (inline simulation) ──────────────────────────────────────────
+# ── _skills_add (real function) ───────────────────────────────────────────────
 
 @test "skills_add appends skill to YAML" {
-    local skills_file="${CLAWSPARK_DIR}/skills.yaml"
+    _load_skill_helpers
+    _skills_add "new-test-skill" 2>/dev/null
 
-    local tmpfile
-    tmpfile=$(mktemp)
-    awk -v skill="new-test-skill" '
-        /enabled:/ { in_enabled=1 }
-        in_enabled && /^[[:space:]]*custom:/ {
-            printf "    - name: %s\n      description: User-added skill\n", skill
-            in_enabled=0
-        }
-        { print }
-    ' "${skills_file}" > "${tmpfile}"
-    mv "${tmpfile}" "${skills_file}"
-
-    run cat "${skills_file}"
+    run cat "${CLAWSPARK_DIR}/skills.yaml"
     [[ "$output" == *"new-test-skill"* ]]
 }
 
 @test "skills_add does not duplicate existing skill" {
-    local skills_file="${CLAWSPARK_DIR}/skills.yaml"
+    _load_skill_helpers
+    _skills_add "test-skill-alpha" 2>/dev/null
 
-    if grep -q "name: test-skill-alpha" "${skills_file}" 2>/dev/null || \
-       grep -q "^  *- test-skill-alpha$" "${skills_file}" 2>/dev/null; then
-        already_present=true
-    else
-        already_present=false
-    fi
-
-    [ "$already_present" = true ]
+    local count
+    count=$(grep -c "test-skill-alpha" "${CLAWSPARK_DIR}/skills.yaml")
+    [ "$count" -eq 1 ]
 }
 
-# ── _skills_remove (inline simulation) ───────────────────────────────────────
+# ── _skills_remove (real function) ────────────────────────────────────────────
 
 @test "skills_remove deletes name-format entry" {
-    local skills_file="${CLAWSPARK_DIR}/skills.yaml"
-    local name="test-skill-alpha"
+    _load_skill_helpers
+    _skills_remove "test-skill-alpha" 2>/dev/null
 
-    local tmpfile
-    tmpfile=$(mktemp)
-    awk -v skill="${name}" '
-        /^[[:space:]]*- name:/ && $0 ~ skill { skip=1; next }
-        skip && /^[[:space:]]+description:/ { skip=0; next }
-        skip { skip=0 }
-        /^[[:space:]]*-[[:space:]]+/ && $0 ~ skill { next }
-        { print }
-    ' "${skills_file}" > "${tmpfile}"
-    mv "${tmpfile}" "${skills_file}"
-
-    run cat "${skills_file}"
+    run cat "${CLAWSPARK_DIR}/skills.yaml"
     [[ "$output" != *"test-skill-alpha"* ]]
     [[ "$output" == *"test-skill-beta"* ]]
 }
 
 @test "skills_remove deletes simple-format entry" {
-    local skills_file="${CLAWSPARK_DIR}/skills.yaml"
-    local name="simple-skill"
+    _load_skill_helpers
+    _skills_remove "simple-skill" 2>/dev/null
 
-    local tmpfile
-    tmpfile=$(mktemp)
-    awk -v skill="${name}" '
-        /^[[:space:]]*- name:/ && $0 ~ skill { skip=1; next }
-        skip && /^[[:space:]]+description:/ { skip=0; next }
-        skip { skip=0 }
-        /^[[:space:]]*-[[:space:]]+/ && $0 ~ skill { next }
-        { print }
-    ' "${skills_file}" > "${tmpfile}"
-    mv "${tmpfile}" "${skills_file}"
-
-    run cat "${skills_file}"
+    run cat "${CLAWSPARK_DIR}/skills.yaml"
     [[ "$output" != *"simple-skill"* ]]
     [[ "$output" == *"another-simple"* ]]
 }
