@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>clawspark - One Command. Private AI Agent. Your Hardware.</title>
   <meta name="description" content="One-click installer for a fully private AI agent on your own hardware. Code, research, browse the web, analyze images, and automate tasks on DGX Spark, RTX GPUs, Mac, or Jetson. No cloud. No API keys. No data leaves your machine.">
+  <link rel="icon" type="image/svg+xml" href="logo-icon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -65,10 +66,18 @@
     }
 
     nav .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
       font-size: 1.25rem;
       font-weight: 800;
       color: #76b900;
       letter-spacing: -0.02em;
+    }
+
+    nav .logo img {
+      height: 32px;
+      width: 32px;
     }
 
     nav .nav-links {
@@ -1092,7 +1101,7 @@
   <!-- Navigation -->
   <nav>
     <div class="container">
-      <div class="logo">clawspark</div>
+      <div class="logo"><img src="logo-icon.svg" alt="clawspark logo">clawspark</div>
       <ul class="nav-links">
         <li><a href="#features">Features</a></li>
         <li><a href="#security">Security</a></li>
@@ -1108,6 +1117,7 @@
   <!-- Hero -->
   <section class="hero">
     <div class="hero-content fade-in">
+      <img src="logo-icon.svg" alt="clawspark" style="width: 96px; height: 96px; margin-bottom: 20px;">
       <div class="hero-badge">Open Source / MIT License</div>
       <h1><span class="accent">claw</span>spark</h1>
       <p class="tagline">One command. Private AI agent. Your hardware.</p>
